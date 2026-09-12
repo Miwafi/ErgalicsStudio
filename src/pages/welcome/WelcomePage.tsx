@@ -74,7 +74,6 @@ export default function WelcomePage() {
     <div className="welcome">
       <header className="welcome-topbar">
         <Link className="brand" to="/">
-          <span className="brand-logo"><img src="/ico.ico" alt="" draggable={false} /></span>
           <span className="brand-name">Ergalics Studio</span>
         </Link>
         <div className="topbar-actions">

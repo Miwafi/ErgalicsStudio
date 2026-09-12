@@ -54,7 +54,6 @@ export function TopBar() {
       </button>
 
       <a className="brand" href="#/" onClick={(e) => { e.preventDefault(); navigate('/'); }}>
-        <span className="brand-logo"><img src="/ico.ico" alt="" draggable={false} /></span>
         <span className="brand-name">Ergalics Studio</span>
       </a>
 

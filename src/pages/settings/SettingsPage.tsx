@@ -38,7 +38,6 @@ export default function SettingsPage() {
     <div className="settings">
       <header className="settings-topbar">
         <a className="brand" href="#/" onClick={(e) => { e.preventDefault(); navigate('/'); }}>
-          <span className="brand-logo"><img src="/ico.ico" alt="" draggable={false} /></span>
           <span className="brand-name">Ergalics Studio</span>
         </a>
         <div className="topbar-actions">

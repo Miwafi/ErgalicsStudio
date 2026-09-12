@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { SettingsState } from '@/core/settings';
 import { loadSettings, saveSettings, persistLegacyPrefs } from '@/core/settings';
-import { setLocale } from '@/i18n';
+import { setLocale, getLocale, subscribeLocale } from '@/i18n';
 import { setThemePreference } from '@/theme';
 import { initGpu, resetGpu } from '@/core/gpu';
 import { resetGpuCompute } from '@/core/compute';
@@ -16,7 +16,13 @@ interface SettingsStore extends SettingsState {
   setMemoryLimit: (limit: SettingsState['memoryLimit']) => void;
 }
 
-const initial = loadSettings();
+// Locale has a single runtime authority: the i18n module (booted from
+// 'ergalics:lang', which every locale-writing path keeps up to date).
+// The settings snapshot ('ergalics:settings') can lag behind it when the
+// language was switched via the top-bar LanguageSwitcher, which bypasses
+// this store — so on boot the store must adopt i18n's locale, otherwise
+// the settings dialog would show a different language than the UI.
+const initial = { ...loadSettings(), locale: getLocale() };
 
 export const useSettingsStore = create<SettingsStore>((set) => ({
   ...initial,
@@ -52,6 +58,18 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
     persist();
   },
 }));
+
+// Keep the store's locale in sync when the language is changed outside this
+// store (top-bar LanguageSwitcher calls i18n's setLocale directly). Persisting
+// here keeps 'ergalics:settings' aligned; it does not loop, because writing
+// localStorage does not re-emit i18n events.
+subscribeLocale(() => {
+  const next = getLocale();
+  if (useSettingsStore.getState().locale !== next) {
+    useSettingsStore.setState({ locale: next });
+    persist();
+  }
+});
 
 function persist() {
   saveSettings({

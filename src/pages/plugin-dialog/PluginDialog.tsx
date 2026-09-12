@@ -269,7 +269,7 @@ export function PluginDialog({ open, onClose }: PluginDialogProps) {
         {tab === 'local' && (
           <div className="plugin-local-pane">
             <button type="button" className="btn btn-primary btn-block" onClick={() => fileInputRef.current?.click()}>
-              {installing ? <span className="spinner" /> : t('plugin.file_format')}
+              {installing ? <span className="spinner" /> : t('plugin.choose_file')}
             </button>
             <input
               ref={fileInputRef}
