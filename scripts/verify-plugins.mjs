@@ -4,19 +4,15 @@
 // 2. Contour plugin renders the vortex field (ramp + contour lines).
 // 3. Scatter plugin renders cluster data with color channel.
 // 4. New sample data (tornado.xyz) works with the 3D point cloud plugin.
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { startPreview, launchOptions, shot, sleep } from './_harness.mjs';
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let server;
+let browser;
 
 (async () => {
-  const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', '4198'], {
-    cwd: process.cwd(), stdio: 'ignore', detached: true,
-  });
-  server.unref();
-  await sleep(3500);
-  const browser = await chromium.launch({ executablePath: EDGE, headless: true, args: ['--no-sandbox'] });
+  server = await startPreview(4198);
+  browser = await chromium.launch(launchOptions());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -40,13 +36,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const key = `${data[i]},${data[i + 1]},${data[i + 2]}`;
       colors.set(key, (colors.get(key) ?? 0) + 1);
     }
-    const top = [...colors.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
     return { distinct: colors.size, all: [...colors.keys()] };
   });
   const loadExample = (title) =>
     page.locator('.plugin-card', { hasText: title }).locator('button', { hasText: '加载' }).click();
 
-  await page.goto('http://localhost:4198/#/', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/`, { waitUntil: 'networkidle' });
   await sleep(1000);
 
   // ---- welcome footer links are functional ----
@@ -86,7 +81,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1600);
   let s = await sample();
   step('contour renders many colors (ramp)', s.distinct > 40);
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/contour.png' });
+  await page.screenshot({ path: shot('contour.png') });
 
   // ---- 3. Scatter plugin (cluster data) ----
   await page.locator('.plugin-item[data-plugin-id="example.scatter"]').click();
@@ -97,7 +92,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1600);
   s = await sample();
   step('scatter has teal+amber points (color channel)', s.all.includes('45,212,191') && s.all.includes('251,191,36'));
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/scatter.png' });
+  await page.screenshot({ path: shot('scatter.png') });
 
   // ---- 4. Tornado sample in the 3D point cloud ----
   await page.locator('.plugin-item[data-plugin-id="example.point-cloud-3d"]').click();
@@ -107,15 +102,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await loadExample('龙卷风');
   await sleep(1800);
   step('3D tornado: surface visible + no errors', await threeVisible());
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/tornado3d.png' });
+  await page.screenshot({ path: shot('tornado3d.png') });
 
   out.push('=== ERRORS ===');
   out.push(errors.length ? errors.join('\n') : '(none)');
   console.log(out.join('\n'));
-  await browser.close();
-  server.kill();
-  if (errors.length) process.exit(1);
-})().catch((e) => {
-  console.error('VERIFY PLUGINS FAILED:', e);
-  process.exit(1);
-});
+  if (errors.length) process.exitCode = 1;
+})()
+  .catch((e) => {
+    console.error('VERIFY PLUGINS FAILED:', e);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    // Without a finally, any failed assertion above leaked a headless browser
+    // and a detached preview server holding the port.
+    await browser?.close().catch(() => {});
+    server?.stop();
+  });

@@ -9,29 +9,6 @@ import type { Plugin, PluginManifest, PluginApi } from '@/types/plugin';
 import { savePluginPackage, type StoredPluginPackage } from './storage';
 import { createPluginSandbox, evaluatePluginLegacy } from './sandbox';
 
-// Object URLs created for a stored package, keyed by plugin id, so they can
-// be revoked when the package is re-installed or uninstalled.
-const urlRegistry = new Map<string, string[]>();
-
-function trackUrls(id: string, urls: string[]) {
-  const previous = urlRegistry.get(id);
-  if (previous) {
-    for (const url of previous) URL.revokeObjectURL(url);
-  }
-  urlRegistry.set(id, urls);
-}
-
-/**
- * Revoke all Blob URLs held for a stored plugin package. Call this when a
- * plugin package is uninstalled so long-lived object URLs are released.
- */
-export function revokeCspkgUrls(id: string) {
-  const urls = urlRegistry.get(id);
-  if (!urls) return;
-  for (const url of urls) URL.revokeObjectURL(url);
-  urlRegistry.delete(id);
-}
-
 const REQUIRED_MANIFEST_FIELDS = ['id', 'entry', 'name', 'version'] as const;
 
 /** Hard caps against zip-bomb / oversized archives. The input size is bounded
@@ -251,16 +228,9 @@ export async function loadCspkg(
     }
   }
 
-  // Persist the package for later re-loading. Revoke any previous URLs for
-  // this id (re-install) so the registry does not accumulate dead blobs.
-  const assets: Record<string, string> = {};
-  const createdUrls: string[] = [];
-  for (const [path, data] of Object.entries(files)) {
-    const url = URL.createObjectURL(new Blob([data as BlobPart], { type: 'application/octet-stream' }));
-    assets[path] = url;
-    createdUrls.push(url);
-  }
-  trackUrls(manifest.id, createdUrls);
+  // Persist the package record. Only paths are stored — see the note on
+  // `StoredPluginPackage`: object URLs are document-scoped and would be dead
+  // on the next session.
   const stored: StoredPluginPackage = {
     id: manifest.id,
     name: manifest.name,
@@ -268,8 +238,8 @@ export async function loadCspkg(
     author: manifest.author,
     description: manifest.description,
     icon: manifest.icon,
-    entryUrl: assets[manifest.entry] ?? '',
-    assets,
+    entry: manifest.entry,
+    files: Object.keys(files),
     installedAt: Date.now(),
   };
   await savePluginPackage(stored).catch(() => {

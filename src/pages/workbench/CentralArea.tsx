@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '@/i18n';
-import { usePluginStore, setHostContainers, rerenderActivePlugin } from '@/stores/pluginStore';
+import { usePluginStore, setHostContainers, rerenderActivePlugin, runTracked } from '@/stores/pluginStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useAppStore } from '@/stores/appStore';
 import { detectFormats, matchesFormats, collectSupportedExtensions, detectScientificFormat, scientificFormatFromName } from '@/core/fileFormat';
@@ -260,12 +260,36 @@ export function CentralArea() {
     }
     if (matches.length === 1) {
       const id = matches[0] as string;
-      const pluginStore2 = usePluginStore.getState();
-      if (usePluginStore.getState().activeId !== id) await pluginStore2.activate(id);
-      await pluginStore2.registry.find((e) => e.id === id)?.plugin?.loadData?.(file);
+      await loadIntoPlugin(id, file);
       return;
     }
     setChooser({ open: true, file, pluginIds: matches });
+  };
+
+  /**
+   * Activate a plugin and hand it a file, recording the import in the run
+   * history. A throwing `loadData()` used to escape as an unhandled
+   * rejection from the drop handler, leaving the user with no feedback.
+   */
+  const loadIntoPlugin = async (id: string, file: File) => {
+    const pluginStore2 = usePluginStore.getState();
+    if (usePluginStore.getState().activeId !== id) await pluginStore2.activate(id);
+    try {
+      await runTracked(
+        {
+          pluginId: id,
+          kind: 'data-import',
+          label: file.name,
+          detail: { bytes: file.size, type: file.type || undefined },
+        },
+        async () => {
+          await pluginStore2.registry.find((e) => e.id === id)?.plugin?.loadData?.(file);
+        },
+      );
+    } catch (err) {
+      logger.error('plugin', 'loadData failed', { id, file: file.name }, err);
+      notify('error', t('plugin.load_failed'));
+    }
   };
 
   const handleDrop = async (e: React.DragEvent) => {
@@ -365,11 +389,7 @@ export function CentralArea() {
         onClose={() => setChooser({ open: false, file: null, pluginIds: [] })}
         onPick={async (id) => {
           const file = chooser.file;
-          if (file) {
-            const store = usePluginStore.getState();
-            if (usePluginStore.getState().activeId !== id) await store.activate(id);
-            await store.registry.find((e) => e.id === id)?.plugin?.loadData?.(file);
-          }
+          if (file) await loadIntoPlugin(id, file);
           setChooser({ open: false, file: null, pluginIds: [] });
         }}
       />

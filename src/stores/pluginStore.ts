@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import type {
+  ParameterSnapshot,
   Plugin,
   PluginApi,
   PluginManifest,
   PluginRegistryEntry,
+  PluginRunRecord,
   SupportedFormat,
   PluginRenderContext,
   Scene3DHandle,
@@ -11,16 +13,26 @@ import type {
 import { getLocale, t, subscribeLocale } from '@/i18n';
 import { on, emit, type BusSubscription } from '@/core/events';
 import { logger } from '@/core/logger';
-import { revokeCspkgUrls } from '@/core/cspkg';
 import { getGpuCompute } from '@/core/compute';
+import { createPluginCache, disposePluginCache } from '@/core/pluginCache';
+import { downloadBlob } from '@/core/download';
 import { useProjectStore } from './projectStore';
 import { useAppStore } from './appStore';
+
+export interface BeginRunInput {
+  pluginId: string;
+  kind: PluginRunRecord['kind'];
+  label?: string;
+  detail?: Record<string, unknown>;
+}
 
 interface PluginStore {
   registry: PluginRegistryEntry[];
   activeId: string | null;
   loadingIds: string[];
   initialized: boolean;
+  /** Append-only experiment trace (imports, compute runs, custom steps). */
+  runHistory: PluginRunRecord[];
 
   /** Load a plugin module (from builtin or installed package). */
   load: (plugin: Plugin) => Promise<void>;
@@ -36,6 +48,19 @@ interface PluginStore {
   restoreState: (projectState: { state?: { activePlugin?: string | null; parameters?: Record<string, Record<string, unknown>> } }) => void;
   getFormats: () => { pluginId: string; formats: SupportedFormat[] }[];
   setInitialized: () => void;
+  /** Open a run record; returns its id for `finishRun`. */
+  beginRun: (input: BeginRunInput) => string;
+  /** Close a run record as succeeded or failed. */
+  finishRun: (id: string, ok: boolean, error?: string) => void;
+  /**
+   * Snapshot every loaded plugin's live parameters next to its version, so a
+   * result can be attributed to the exact configuration that produced it.
+   */
+  exportParameterSnapshot: () => Promise<ParameterSnapshot>;
+  /** Full traceability bundle: parameters + runs + buffered logs. */
+  exportDiagnostics: () => Promise<string>;
+  /** Fan `onProjectSave` / `onProjectLoad` out to every loaded plugin. */
+  notifyProjectLifecycle: (phase: 'save' | 'load') => void;
 }
 
 /** Per-plugin param subscriptions so unloading one plugin cannot break the
@@ -47,6 +72,14 @@ const localeSubscriptions = new Map<string, Array<() => void>>();
 const sandboxLocaleUpdaters = new Map<string, (locale: string) => void>();
 /** Serializes activate() so two rapid calls cannot race deactivate/activate. */
 let activationChain: Promise<void> = Promise.resolve();
+/**
+ * In-flight `ensureBuiltinsLoaded()` promise, shared by concurrent callers.
+ * Cleared on rejection so a transient failure can be retried instead of
+ * poisoning every later call with a permanently-rejected promise.
+ */
+let builtinsPromise: Promise<void> | null = null;
+/** Monotonic run-record id source (also keeps ids sortable by start). */
+let runSeq = 0;
 
 // Push locale changes to every sandboxed plugin worker, and re-localize the
 // registry display names (name/description) so the sidebar, status bar, and
@@ -131,14 +164,39 @@ function buildPluginApi(pluginId: string): PluginApi {
       return getGpuCompute() ?? undefined;
     },
     notify: (kind, message) => useAppStore.getState().notify(kind, message),
+    // Structured logging: the scope carries the plugin id so an exported
+    // trace can be filtered per plugin without parsing message text.
+    log: (level, message, details) => {
+      const target = logger[level] ?? logger.info;
+      if (details === undefined) target.call(logger, `plugin:${pluginId}`, message);
+      else target.call(logger, `plugin:${pluginId}`, message, details);
+    },
+    exportFile: (fileName, data, mimeType) => {
+      downloadBlob(fileName, data, mimeType);
+    },
+    cache: createPluginCache(pluginId),
     openFile: async () => {
       const input = document.createElement('input');
       input.type = 'file';
+      // The picker input is never attached to the document, so it would
+      // otherwise stay referenced by the closure (and by the browser's
+      // internal picker bookkeeping) until the page is torn down.
+      const cleanup = () => {
+        input.onchange = null;
+        input.oncancel = null;
+        input.remove();
+      };
       const file = await new Promise<File | null>((resolve) => {
-        input.onchange = () => resolve(input.files?.[0] ?? null);
+        const settle = (value: File | null) => {
+          cleanup();
+          resolve(value);
+        };
+        input.onchange = () => settle(input.files?.[0] ?? null);
         // Dismissing the native dialog never fires `change` — without this
         // the awaiting plugin would hang forever on a cancelled picker.
-        input.oncancel = () => resolve(null);
+        // (Browsers without `oncancel` — Safari < 15.4 — still hang; the
+        // sandbox RPC timeout is the backstop there.)
+        input.oncancel = () => settle(null);
         input.click();
       });
       return file;
@@ -209,10 +267,15 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   activeId: null,
   loadingIds: [],
   initialized: false,
+  runHistory: [],
 
   load: async (plugin) => {
     const id = plugin.manifest.id;
     if (get().isLoaded(id)) return;
+    // `loadingIds` doubles as the in-flight guard. Checking only `isLoaded`
+    // let two synchronous callers both pass (the entry is only added to the
+    // registry after `init` resolves), which ran `init` twice on one plugin.
+    if (get().loadingIds.includes(id)) return;
     set((s) => ({ loadingIds: [...s.loadingIds, id] }));
     try {
       await plugin.init(buildPluginApi(id));
@@ -240,9 +303,9 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         plugin,
       };
       set((s) => ({ registry: [...s.registry.filter((e) => e.id !== id), entry] }));
-      logger.info('plugin', `loaded ${id}@${plugin.manifest.version}`);
+      logger.info('plugin', 'plugin loaded', { id, version: plugin.manifest.version });
     } catch (err) {
-      logger.error('plugin', `failed to load ${id}`, err);
+      logger.error('plugin', 'plugin load failed', { id }, err);
       useAppStore.getState().setError(`plugin:${id}`);
     } finally {
       set((s) => ({ loadingIds: s.loadingIds.filter((x) => x !== id) }));
@@ -252,13 +315,20 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   unload: async (id) => {
     const entry = get().registry.find((e) => e.id === id);
     if (!entry?.plugin) return;
-    try {
-      await entry.plugin.destroy();
-    } catch (err) {
-      logger.error('plugin', `destroy failed ${id}`, err);
+    // Unloading the *active* plugin used to skip `deactivate()` entirely, so
+    // a 3-D plugin's scene stayed visible over an empty viewport and any
+    // animation loop it started in `activate()` kept running.
+    if (get().activeId === id) {
+      await get().deactivate();
     }
-    // Release blob URLs held for installed packages (cspkg assets).
-    revokeCspkgUrls(id);
+    try {
+      await entry.plugin.destroy?.();
+    } catch (err) {
+      logger.error('plugin', 'plugin destroy failed', { id }, err);
+    }
+    // Drop the plugin's intermediate-result cache; without this every
+    // unloaded plugin's scratch space lived until the page was reloaded.
+    disposePluginCache(id);
     sandboxLocaleUpdaters.delete(id);
     // Only unsubscribe this plugin's own handlers. Previously every unload
     // cleared the shared list, silently breaking the active plugin's param
@@ -277,7 +347,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     const entry = get().registry.find((e) => e.id === id);
     const plugin = entry?.plugin;
     if (!plugin) {
-      logger.warn('plugin', `cannot activate unloaded plugin ${id}`);
+      logger.warn('plugin', 'cannot activate unloaded plugin', { id });
       return;
     }
     if (get().activeId === id) return;
@@ -301,22 +371,30 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
         } else {
           hostContainers?.setThreeVisible?.(false);
         }
-        await plugin.activate(ctx);
+        await plugin.activate?.(ctx);
         await plugin.render?.(ctx.container);
       } catch (err) {
-        logger.error('plugin', `activate failed ${id}`, err);
+        logger.error('plugin', 'plugin activate failed', { id }, err);
         useAppStore.getState().setError(`plugin:${id}`);
         return;
       }
       // Restore persisted params for this plugin from the current project so
       // re-activating a previously-inactive plugin picks up its stored values.
+      // `updateParams` may be async (sandboxed plugins answer over RPC) — an
+      // unchecked rejection here surfaced as an unhandled promise rejection.
       const stored = useProjectStore.getState().project?.state.parameters[id];
       if (stored && Object.keys(stored).length > 0) {
-        plugin.updateParams(stored);
+        try {
+          await plugin.updateParams?.(stored);
+        } catch (err) {
+          logger.warn('plugin', 'failed to restore params', { id }, err);
+        }
       }
       // receive parameter updates
       const sub = on(`plugin:${id}:params`, (params: Record<string, unknown>) => {
-        plugin.updateParams(params);
+        void Promise.resolve()
+          .then(() => plugin.updateParams?.(params))
+          .catch((err: unknown) => logger.warn('plugin', 'updateParams failed', { id }, err));
         emit(`plugin:${id}:defs`, undefined);
       });
       const existing = paramSubscriptions.get(id) ?? [];
@@ -332,7 +410,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       } catch (err) {
         // A rejecting getParams() used to reject the whole activationChain and
         // every caller awaiting it, leaving an inconsistent activeId.
-        logger.warn('plugin', `getParams failed for ${id}`, err);
+        logger.warn('plugin', 'getParams failed', { id }, err);
       }
     };
     activationChain = activationChain.then(run, run);
@@ -345,9 +423,9 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     const entry = registry.find((e) => e.id === activeId);
     if (entry?.plugin) {
       try {
-        await entry.plugin.deactivate();
+        await entry.plugin.deactivate?.();
       } catch (err) {
-        logger.error('plugin', `deactivate failed ${activeId}`, err);
+        logger.error('plugin', 'plugin deactivate failed', { id: activeId }, err);
       }
     }
     // Only clear the active plugin's own subscriptions.
@@ -371,7 +449,16 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   getAllParams: async () => {
     const params: Record<string, Record<string, unknown>> = {};
     for (const entry of get().registry) {
-      const defs = (await entry.plugin?.getParams()) ?? [];
+      // One misbehaving plugin must not abort the whole snapshot: this runs
+      // on every project save, so a throwing `getParams` previously made the
+      // project unsaveable with no indication of which plugin was at fault.
+      let defs: Awaited<ReturnType<Plugin['getParams']>> = [];
+      try {
+        defs = (await entry.plugin?.getParams()) ?? [];
+      } catch (err) {
+        logger.warn('plugin', 'getParams failed during snapshot', { id: entry.id }, err);
+        continue;
+      }
       const values: Record<string, unknown> = {};
       for (const def of defs) {
         const value = 'value' in def ? def.value : null;
@@ -401,7 +488,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
               await get().load(plugin);
             }
           } catch (err) {
-            logger.warn('plugin', `failed to lazy-load builtin ${activeId}`, err);
+            logger.warn('plugin', 'failed to lazy-load builtin', { id: activeId }, err);
           }
         }
         // Await activation BEFORE pushing stored params. The previous code
@@ -419,9 +506,11 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
           try {
             await entry?.plugin?.updateParams?.(values);
           } catch (err) {
-            logger.warn('plugin', `failed to restore params for ${pluginId}`, err);
+            logger.warn('plugin', 'failed to restore params', { id: pluginId }, err);
           }
         }
+        // Only now is the project fully restored for plugins.
+        get().notifyProjectLifecycle('load');
       })
       // `void` + a floating promise otherwise becomes an unhandled rejection if
       // any step above throws (e.g. a rejecting updateParams).
@@ -431,37 +520,150 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   },
 
   ensureBuiltinsLoaded: async () => {
-    if (get().initialized) return;
+    // Caching the in-flight promise (instead of only an `initialized` flag)
+    // makes concurrent callers await the same load: previously the flag was
+    // set before the first `await`, so a second caller returned immediately
+    // with a half-populated registry and silently skipped the built-ins.
+    if (builtinsPromise) return builtinsPromise;
     set({ initialized: true });
-    try {
-      const { BUILTIN_PLUGINS } = await import('@/plugins/builtin');
-      for (const info of BUILTIN_PLUGINS) {
-        // Fun/utility plugins declare `autoload: false` — they are listed in
-        // the built-in / marketplace panel but only loaded when the user
-        // picks them, so they don't bloat the startup registry.
-        if (info.autoload === false) continue;
-        try {
-          const plugin = await info.load();
-          await get().load(plugin);
-        } catch (err) {
-          logger.warn('plugin', `failed to load builtin ${info.manifest.id}`, err);
+    builtinsPromise = (async () => {
+      try {
+        const { BUILTIN_PLUGINS } = await import('@/plugins/builtin');
+        for (const info of BUILTIN_PLUGINS) {
+          // Fun/utility plugins declare `autoload: false` — they are listed in
+          // the built-in / marketplace panel but only loaded when the user
+          // picks them, so they don't bloat the startup registry.
+          if (info.autoload === false) continue;
+          try {
+            const plugin = await info.load();
+            await get().load(plugin);
+          } catch (err) {
+            logger.warn('plugin', 'failed to load builtin', { id: info.manifest.id }, err);
+          }
         }
+      } catch (err) {
+        logger.error('plugin', 'failed to resolve builtin plugins', err);
       }
-    } catch (err) {
-      logger.error('plugin', 'failed to resolve builtin plugins', err);
-    }
+    })();
+    return builtinsPromise;
   },
 
   getFormats: () =>
     get().registry.map((e) => ({ pluginId: e.id, formats: e.formats })),
 
   setInitialized: () => set({ initialized: true }),
+
+  beginRun: (input) => {
+    runSeq += 1;
+    const entry = usePluginStore.getState().registry.find((e) => e.id === input.pluginId);
+    const record: PluginRunRecord = {
+      id: `run-${runSeq}`,
+      pluginId: input.pluginId,
+      pluginVersion: entry?.version,
+      kind: input.kind,
+      label: input.label,
+      startedAt: Date.now(),
+      detail: input.detail,
+    };
+    set((s) => ({ runHistory: [...s.runHistory, record] }));
+    return record.id;
+  },
+
+  finishRun: (id, ok, error) => {
+    set((s) => ({
+      runHistory: s.runHistory.map((r) => {
+        if (r.id !== id) return r;
+        const endedAt = Date.now();
+        return {
+          ...r,
+          endedAt,
+          durationMs: endedAt - r.startedAt,
+          ok,
+          error: ok ? undefined : error,
+        };
+      }),
+    }));
+  },
+
+  exportParameterSnapshot: async () => {
+    // Live values from the plugin instances: project state only holds what
+    // the last save happened to capture, which is not what a run actually
+    // used. `getAllParams` already skips plugins whose getParams() throws.
+    const values = await get().getAllParams();
+    const plugins: ParameterSnapshot['plugins'] = {};
+    for (const entry of get().registry) {
+      plugins[entry.id] = { version: entry.version, params: values[entry.id] ?? {} };
+    }
+    return { generatedAt: new Date().toISOString(), plugins };
+  },
+
+  exportDiagnostics: async () => {
+    const snapshot = await get().exportParameterSnapshot();
+    return JSON.stringify(
+      {
+        generatedAt: snapshot.generatedAt,
+        plugins: get().registry.map((e) => ({ id: e.id, version: e.version, active: e.active })),
+        parameters: snapshot.plugins,
+        runs: get().runHistory,
+        logs: logger.entries(),
+      },
+      null,
+      2,
+    );
+  },
+
+  notifyProjectLifecycle: (phase) => {
+    const method = phase === 'save' ? 'onProjectSave' : 'onProjectLoad';
+    for (const entry of get().registry) {
+      const hook = entry.plugin?.[method];
+      if (typeof hook !== 'function') continue;
+      // Best-effort: a plugin failing to react must never abort the save or
+      // the load that triggered it.
+      void Promise.resolve()
+        .then(() => (hook as () => unknown).call(entry.plugin))
+        .catch((err: unknown) => logger.warn('plugin', `${method} failed`, { id: entry.id }, err));
+    }
+  },
 }));
 
-/** Load a plugin from a manifest + factory. */
+/**
+ * Load a plugin from an instance or a factory.
+ *
+ * The factory is built with `plugin.manifest.id` when it is an object, so
+ * params written during `init` land under the real plugin id instead of a
+ * placeholder that no later lookup can find.
+ */
 export async function loadPluginFromModule(factory: Plugin | ((api: PluginApi) => Plugin)): Promise<void> {
-  const plugin = typeof factory === 'function' ? (factory as (api: PluginApi) => Plugin)(buildPluginApi('__init__')) : factory;
-  await usePluginStore.getState().load(plugin);
+  if (typeof factory !== 'function') {
+    await usePluginStore.getState().load(factory);
+    return;
+  }
+  const probe = (factory as (api: PluginApi) => Plugin)(buildPluginApi('__init__'));
+  await usePluginStore.getState().load(probe);
+}
+
+/**
+ * Run an action as a tracked experiment step.
+ *
+ * Wraps the host's data-import path so every import is recorded with its
+ * plugin version, byte count, duration and outcome — and so a throwing
+ * `loadData()` reports to the user instead of surfacing as an unhandled
+ * rejection inside a React event handler.
+ */
+export async function runTracked<T>(
+  input: BeginRunInput,
+  action: () => Promise<T>,
+): Promise<T> {
+  const store = usePluginStore.getState();
+  const runId = store.beginRun(input);
+  try {
+    const value = await action();
+    usePluginStore.getState().finishRun(runId, true);
+    return value;
+  } catch (err) {
+    usePluginStore.getState().finishRun(runId, false, err instanceof Error ? err.message : String(err));
+    throw err;
+  }
 }
 
 export function isPluginActive(id: string): boolean {

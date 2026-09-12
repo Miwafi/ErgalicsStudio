@@ -7,27 +7,14 @@
 // 5. Logistic regression renders a decision boundary.
 // 6. MNIST CNN trains and renders a grid of digit thumbnails (not blobs).
 // 7. No console errors along the way.
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { startPreview, launchOptions, shot, sleep } from './_harness.mjs';
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const SHOTS = 'C:/Users/HUAWEI/AppData/Local/Temp';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const server = await startPreview(4199);
+let browser;
 
 (async () => {
-  const server = spawn(
-    process.execPath,
-    ['node_modules/vite/bin/vite.js', 'preview', '--port', '4199'],
-    { cwd: process.cwd(), stdio: 'ignore', detached: true },
-  );
-  server.unref();
-  await sleep(3500);
-
-  const browser = await chromium.launch({
-    executablePath: EDGE,
-    headless: true,
-    args: ['--no-sandbox'],
-  });
+  browser = await chromium.launch(launchOptions());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -95,7 +82,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await sleep(1500);
   };
 
-  await page.goto('http://localhost:4199/#/workbench', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/workbench`, { waitUntil: 'networkidle' });
   await sleep(1500);
 
   // ---- 1. plugin activates and shows its panel ----
@@ -118,7 +105,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let s = await canvasStats();
   step('after linear training', s);
   step('loss curve + fit drawn (many colors)', s.distinct > 5);
-  await page.screenshot({ path: `${SHOTS}/ai-training-linear.png` });
+  await page.screenshot({ path: shot('ai-training-linear.png') });
 
   // ---- 3. model switch resets hyperparameters ----
   await setParam('模型', 'mnist');
@@ -141,7 +128,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   s = await canvasStats();
   step('after logistic training', s);
   step('decision boundary drawn', s.painted > 1000 && s.distinct > 5);
-  await page.screenshot({ path: `${SHOTS}/ai-training-logistic.png` });
+  await page.screenshot({ path: shot('ai-training-logistic.png') });
 
   // ---- 5. MNIST CNN: load digits, train briefly, render digit grid ----
   await setParam('模型', 'mnist');
@@ -155,15 +142,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   s = await canvasStats();
   step('after mnist training', s);
   step('mnist grid painted (many grayscale levels)', s.distinct > 20);
-  await page.screenshot({ path: `${SHOTS}/ai-training-mnist.png` });
+  await page.screenshot({ path: shot('ai-training-mnist.png') });
 
   out.push('=== ERRORS ===');
   out.push(errors.length ? errors.join('\n') : '(none)');
   console.log(out.join('\n'));
-  await browser.close();
-  server.kill();
-  if (errors.length) process.exit(1);
-})().catch((e) => {
-  console.error('VERIFY AI-TRAINING FAILED:', e);
-  process.exit(1);
-});
+  if (errors.length) process.exitCode = 1;
+})()
+  .catch((e) => {
+    console.error('VERIFY AI-TRAINING FAILED:', e);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await browser?.close().catch(() => {});
+    server.stop();
+  });

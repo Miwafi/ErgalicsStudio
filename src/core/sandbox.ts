@@ -204,6 +204,22 @@ export function evaluatePluginLegacy(entrySource: string, api: PluginApi): Plugi
   return plugin;
 }
 
+/**
+ * Resolve a (possibly dotted) api member, e.g. `"cache.get"`.
+ *
+ * The worker proxy flattens nested api surfaces into dotted method names so
+ * one generic bridge can serve `api.cache.*` without special-casing every
+ * sub-object.
+ */
+function resolveApiMember(api: PluginApi, method: string): unknown {
+  let node: unknown = api;
+  for (const part of method.split('.')) {
+    if (node === null || node === undefined) return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return node;
+}
+
 // ---- Worker sandbox ----
 
 export interface SandboxOptions {
@@ -259,13 +275,17 @@ export async function createPluginSandbox(
   const surfaces: { el: HTMLCanvasElement; callbacks: Set<number> }[] = [];
   let nextCallId = 1;
 
-  const post = (message: unknown, transfer?: Transferable[]) => {
+  /**
+   * Post a message to the worker. Returns `false` when the message could not
+   * be delivered (typically a structured-clone failure), so callers can fall
+   * back instead of assuming delivery. A failed send must reject its pending
+   * call — otherwise the caller awaits forever.
+   */
+  const post = (message: unknown, transfer?: Transferable[]): boolean => {
     try {
       worker.postMessage(message, transfer ?? []);
+      return true;
     } catch (err) {
-      // A message that fails structured clone (e.g. a host object that cannot
-      // be cloned into the worker) must reject its pending call — otherwise
-      // the caller awaits forever.
       logger.error('sandbox', 'postMessage failed', err);
       const msg = message as { id?: number } | null;
       if (typeof msg?.id === 'number' && pending.has(msg.id)) {
@@ -273,24 +293,26 @@ export async function createPluginSandbox(
         pending.delete(msg.id);
         p.reject(new Error(`failed to send message to worker: ${String(err)}`));
       }
+      return false;
     }
   };
 
   /** Reply to a worker api call. If the host result cannot be structured
-   *  cloned (functions, cycles, live contexts), reply with an error instead of
-   *  stranding the worker's pending `await` forever. */
+   *  cloned (functions, cycles, live contexts), `post` fails and we reply
+   *  with an error instead of stranding the worker's pending `await` forever.
+   *
+   *  `postReply` used to wrap `post` in its own try/catch, but `post` never
+   *  rethrows — so this fallback was dead code and a non-serializable result
+   *  silently hung the plugin. It now keys off `post`'s boolean result. */
   const postReply = (message: Record<string, unknown>) => {
-    try {
-      post(message);
-    } catch (err) {
-      logger.warn('sandbox', 'api reply not serializable, replying with error', err);
-      post({
-        event: 'api-reply',
-        callId: message.callId,
-        ok: false,
-        error: `host api result could not be serialized: ${String(err)}`,
-      });
-    }
+    if (post(message)) return;
+    logger.warn('sandbox', 'api reply not serializable, replying with error');
+    post({
+      event: 'api-reply',
+      callId: message.callId,
+      ok: false,
+      error: 'host api result could not be serialized',
+    });
   };
 
   const invoke = <T = unknown>(
@@ -335,8 +357,8 @@ export async function createPluginSandbox(
     switch (msg.event) {
       case 'api': {
         const callId = msg.callId as number;
-        const method = msg.method as keyof PluginApi;
-        const fn = (api as unknown as Record<string, unknown>)[method];
+        const method = msg.method as string;
+        const fn = resolveApiMember(api, method);
         try {
           const result =
             typeof fn === 'function'
@@ -357,8 +379,11 @@ export async function createPluginSandbox(
         break;
       }
       case 'log': {
-        const level = msg.level as 'info' | 'warn' | 'error';
-        (logger[level] ?? logger.info).call(logger, `plugin:${pluginId}`, msg.message);
+        const level = msg.level as 'debug' | 'info' | 'warn' | 'error';
+        const target = logger[level] ?? logger.info;
+        const details = msg.details;
+        if (details === undefined) target.call(logger, `plugin:${pluginId}`, msg.message);
+        else target.call(logger, `plugin:${pluginId}`, msg.message, details);
         break;
       }
       default:
@@ -366,18 +391,34 @@ export async function createPluginSandbox(
     }
   };
 
+  /**
+   * Tear the sandbox down after a fatal worker failure: reject every pending
+   * call, release the transferred canvas surfaces (otherwise the dead
+   * plugin's canvas keeps covering the viewport) and stop the worker so a
+   * wedged script cannot keep burning a core.
+   */
+  const failFast = (reason: string) => {
+    for (const [, p] of pending) p.reject(new Error(reason));
+    pending.clear();
+    for (const s of surfaces) removeSurface(s);
+    surfaces.length = 0;
+    try {
+      worker.terminate();
+    } catch (err) {
+      logger.warn('sandbox', `terminate failed for ${pluginId}`, err);
+    }
+  };
+
   worker.onerror = (ev) => {
     logger.error('sandbox', `worker error for ${pluginId}`, ev.message);
-    for (const [, p] of pending) p.reject(new Error(`worker error: ${ev.message}`));
-    pending.clear();
+    failFast(`worker error: ${ev.message}`);
   };
 
   // A worker that dies without firing `onerror` (terminate, messageerror,
   // cross-origin restrictions) must not leave callers awaiting forever.
   worker.onmessageerror = (ev) => {
     logger.error('sandbox', `worker message error for ${pluginId}`, ev);
-    for (const [, p] of pending) p.reject(new Error('worker message error'));
-    pending.clear();
+    failFast('worker message error');
   };
 
   /** Remove a transferred surface and release every callback it registered. */
@@ -489,6 +530,8 @@ export async function createPluginSandbox(
     getParams: () => invoke<ParamDefinition[]>('getParams'),
     loadData: (file) => invoke('loadData', [file], [], null, SANDBOX_LONG_RPC_TIMEOUT_MS),
     getSupportedFormats: () => invoke<SupportedFormat[]>('getSupportedFormats'),
+    onProjectSave: () => invoke('onProjectSave'),
+    onProjectLoad: () => invoke('onProjectLoad'),
     compute: (input, onProgress) => {
       const created = new Set<number>();
       const args = encodeArgs([input, onProgress ?? undefined], callbacks, created);

@@ -2,28 +2,23 @@
 // Monaco mounts, run a Python program through Pyodide, and check the variable
 // panel + console update. Captures console/page errors.
 // Usage: node scripts/verify-code-mode.mjs
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { startPreview, launchOptions, shot, sleep } from './_harness.mjs';
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', '4175'], {
-  cwd: process.cwd(),
-  stdio: 'ignore',
-  detached: true,
-});
-server.unref();
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-await sleep(3500);
+const server = await startPreview(4175);
 
 const errors = [];
 let browser;
 try {
-  browser = await chromium.launch({ executablePath: EDGE, headless: true, args: ['--no-sandbox', '--enable-unsafe-swiftshader'] });
+  browser = await chromium.launch({
+    ...launchOptions(),
+    args: ['--no-sandbox', '--enable-unsafe-swiftshader'],
+  });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on('console', (m) => m.type() === 'error' && errors.push(`[console] ${m.text()}`));
   page.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
 
-  await page.goto('http://localhost:4175/#/', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/`, { waitUntil: 'networkidle' });
   await sleep(1000);
   await page.locator('.welcome-enter').click();
   await sleep(1500);
@@ -101,7 +96,7 @@ try {
     console.log('SKIP: Pyodide runtime did not become ready within 150s');
   }
 
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/code-mode.png' });
+  await page.screenshot({ path: shot('code-mode.png') });
 
   console.log('=== ERRORS ===');
   console.log(errors.length ? errors.join('\n') : '(none)');
@@ -110,5 +105,5 @@ try {
   console.error('errors so far:', errors.join('\n'));
 } finally {
   if (browser) await browser.close().catch(() => {});
-  server.kill();
+  server.stop();
 }

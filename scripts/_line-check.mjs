@@ -1,20 +1,17 @@
-// Inspect the Monaco current-line / selection colors as actually rendered.
-import { spawn } from 'node:child_process';
+﻿// Inspect the Monaco current-line / selection colors as actually rendered.
 import { chromium } from 'playwright-core';
+import { startPreview, launchOptions, shot, sleep } from './_harness.mjs';
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', '4181'], {
-  cwd: process.cwd(), stdio: 'ignore', detached: true,
-});
-server.unref();
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-await sleep(3500);
+const server = await startPreview(4181);
 
 let browser;
 try {
-  browser = await chromium.launch({ executablePath: EDGE, headless: true, args: ['--no-sandbox', '--enable-unsafe-swiftshader'] });
+  browser = await chromium.launch({
+    ...launchOptions(),
+    args: ['--no-sandbox', '--enable-unsafe-swiftshader'],
+  });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  await page.goto('http://localhost:4181/#/', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/`, { waitUntil: 'networkidle' });
   await sleep(1000);
   await page.locator('.welcome-enter').click();
   await sleep(1500);
@@ -54,8 +51,8 @@ try {
     return { ruleCount: uniq.length, rules: uniq.slice(0, 40) };
   });
   console.log(JSON.stringify(info, null, 2));
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/line-check.png' });
+  await page.screenshot({ path: shot('line-check.png') });
 } finally {
   if (browser) await browser.close().catch(() => {});
-  server.kill();
+  server.stop();
 }

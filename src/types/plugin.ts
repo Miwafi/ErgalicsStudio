@@ -13,6 +13,14 @@ export interface PluginManifest {
   description: string;
   license?: string;
   icon?: string;
+  /**
+   * Entry descriptor. Semantics depend on the distribution channel:
+   * - **Bundled built-ins**: a symbolic id (e.g. `"example.scatter"`). The
+   *   module is resolved by `src/plugins/builtin/index.ts`, never by path.
+   * - **`.cspkg` packages**: a *package-relative* path into the ZIP
+   *   (e.g. `"dist/index.js"`). Absolute paths, drive letters and `..` are
+   *   rejected by `validateManifest`.
+   */
   entry: string;
   homepage?: string;
   dependencies?: Record<string, string>;
@@ -285,6 +293,73 @@ export interface GpuComputeApi {
   ): boolean;
 }
 
+// ---- Observability & scratch space ----
+
+/** Log severities a plugin may emit through `PluginApi.log`. */
+export type PluginLogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/**
+ * Plugin-scoped scratch space for intermediate results.
+ *
+ * Every method is asynchronous: inside the isolated sandbox the cache lives
+ * on the host and is reached over the RPC bridge, so a synchronous `get`
+ * would be impossible to honour. Host plugins pay only a microtask.
+ *
+ * The cache is **not** persisted — treat it as a memoization layer and keep
+ * anything that must survive a reload in `setParam` / project state.
+ */
+export interface PluginCacheApi {
+  /** Resolve a cached value, or `undefined` when missing/expired. */
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  /** Store a value, optionally expiring after `ttlMs`. */
+  set(key: string, value: unknown, ttlMs?: number): Promise<void>;
+  /** Drop one entry. Returns whether it existed. */
+  delete(key: string): Promise<boolean>;
+  /** Drop every entry owned by this plugin. */
+  clear(): Promise<void>;
+  /** Live keys (expired entries are pruned first). */
+  keys(): Promise<string[]>;
+}
+
+/**
+ * One recorded step of an experiment — a data import, a compute run, or a
+ * plugin-defined custom step. Kept so a result can always be traced back to
+ * the plugin version and parameters that produced it.
+ */
+export interface PluginRunRecord {
+  /** Monotonic run id, also used to correlate `beginRun`/`finishRun`. */
+  id: string;
+  pluginId: string;
+  /** Plugin version at the time of the run (reproducibility anchor). */
+  pluginVersion?: string;
+  kind: 'data-import' | 'compute' | 'custom';
+  /** Human-readable label (usually a file name or a compute label). */
+  label?: string;
+  /** Epoch ms when the run started. */
+  startedAt: number;
+  /** Epoch ms when the run settled; absent while still in flight. */
+  endedAt?: number;
+  durationMs?: number;
+  /** `undefined` while in flight. */
+  ok?: boolean;
+  /** Failure message when `ok === false`. */
+  error?: string;
+  /** Free-form structured detail (byte counts, shapes, metric summaries). */
+  detail?: Record<string, unknown>;
+}
+
+/** A plugin's parameters frozen at snapshot time, with its version. */
+export interface ParameterSnapshotEntry {
+  version: string;
+  params: Record<string, unknown>;
+}
+
+/** Versioned parameter snapshot for every loaded plugin. */
+export interface ParameterSnapshot {
+  generatedAt: string;
+  plugins: Record<string, ParameterSnapshotEntry>;
+}
+
 // ---- Host API exposed to plugins (spec §6.4 / §8.4 / plugin isolation) ----
 
 export interface PluginApi {
@@ -305,6 +380,31 @@ export interface PluginApi {
   notify(kind: 'info' | 'success' | 'warning' | 'error', message: string): void;
 
   /**
+   * Emit a structured log line under the `plugin:<id>` scope.
+   *
+   * Prefer this over `console.*`: host logs are buffered and exported with
+   * the run history, so a plugin's own trace survives a reload and ships
+   * with a bug report.
+   */
+  log(level: PluginLogLevel, message: string, details?: unknown): void;
+
+  /**
+   * Ask the host to save a file to the user's downloads.
+   *
+   * Accepts text, an `ArrayBuffer`, or a `Blob`; the MIME type defaults to
+   * `text/plain` for strings and `application/octet-stream` otherwise.
+   * No-op outside a browser context (e.g. the isolated sandbox, where the
+   * request is forwarded to the host anyway).
+   */
+  exportFile(fileName: string, data: string | ArrayBuffer | Blob, mimeType?: string): void;
+
+  /**
+   * Plugin-scoped cache for intermediate results (see `PluginCacheApi`).
+   * Released automatically when the plugin is unloaded.
+   */
+  readonly cache: PluginCacheApi;
+
+  /**
    * GPU compute surface (WGSL kernels + buffers). Present only when a
    * WebGPU device is available — plugins must handle `undefined` and fall
    * back to CPU. Unavailable inside the Worker sandbox.
@@ -318,8 +418,17 @@ export interface PluginApi {
   /** Read a file's ArrayBuffer. */
   readBinary(file: File): Promise<ArrayBuffer>;
 
-  /** Persist a value scoped to this plugin in the current project. */
+  /**
+   * Read a value scoped to this plugin in the current project.
+   *
+   * Sandbox caveat: inside the isolated worker this crosses the RPC bridge,
+   * so it returns a `Promise` even though the host signature is synchronous.
+   */
   getParam(key: string): unknown;
+  /**
+   * Persist a value scoped to this plugin in the current project.
+   * Same sandbox caveat as `getParam`.
+   */
   setParam(key: string, value: unknown): void;
 }
 
@@ -341,19 +450,27 @@ export interface PluginRenderContext {
 /**
  * A plugin module must export a factory (ESM default export is a function
  * or object) that creates a Plugin instance. It receives the host `PluginApi`
- * and must implement the required lifecycle methods.
+ * and implements the lifecycle methods below.
+ *
+ * `manifest`, `init`, `getParams` are required — without them the host cannot
+ * register, wire, or configure the plugin. Every other method is optional:
+ * the host (and the sandboxed runtime) probe with `?.` before calling, which
+ * is what lets a minimal third-party package implement only `render`.
  */
 export interface Plugin {
   readonly manifest: PluginManifest;
-  /** Required lifecycle methods (spec §6.4). */
+  /** Called once, right after the instance is created. */
   init(api: PluginApi): Promise<void> | void;
-  destroy(): Promise<void> | void;
-  activate(context: PluginRenderContext): Promise<void> | void;
-  deactivate(): Promise<void> | void;
+  /** Release everything the plugin owns. Called on unload. */
+  destroy?(): Promise<void> | void;
+  /** The plugin becomes the active one and receives its render context. */
+  activate?(context: PluginRenderContext): Promise<void> | void;
+  /** The plugin stops being active (stop timers/loops, keep state). */
+  deactivate?(): Promise<void> | void;
   /** Render into the provided container. */
   render?(container: ContainerCapabilities): Promise<void> | void;
   /** Receive parameter updates. */
-  updateParams(params: Record<string, unknown>): Promise<void> | void;
+  updateParams?(params: Record<string, unknown>): Promise<void> | void;
   /** Get current parameters (definitions + values). May resolve asynchronously. */
   getParams(): ParamDefinition[] | Promise<ParamDefinition[]>;
   /** Execute a computation. */
@@ -363,7 +480,9 @@ export interface Plugin {
   loadData?(file: File): Promise<void> | void;
   getSupportedFormats?(): SupportedFormat[] | Promise<SupportedFormat[]>;
   renderToScene?(scene: Scene3DHandle): Promise<void> | void;
+  /** Fired after the project has been persisted. */
   onProjectSave?(): Promise<void> | void;
+  /** Fired after a project has been loaded and its state restored. */
   onProjectLoad?(): Promise<void> | void;
 }
 
