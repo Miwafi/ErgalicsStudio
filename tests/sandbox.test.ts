@@ -175,7 +175,7 @@ describe('createPluginSandbox (worker RPC)', () => {
     expect(onProgress).toHaveBeenCalledWith({ done: 1, total: 2 });
     expect(api.notify).toHaveBeenCalledWith('info', 'done-hello');
 
-    await plugin.destroy();
+    await plugin.destroy?.();
   });
 
   it('resolves null when the entry fails to boot', async () => {

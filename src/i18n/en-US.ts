@@ -100,6 +100,8 @@ export const enUS: LocaleDictionary = {
   'workbench.perf.section.runtime': 'Runtime',
   'workbench.project_name': 'Project Name',
   'workbench.share': 'Share',
+  'workbench.export_log': 'Export Run Log',
+  'workbench.export_log_done': 'Run log exported',
   'workbench.drag_hint': 'Drag files here',
 
   'project.new': 'New Project',

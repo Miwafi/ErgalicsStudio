@@ -134,6 +134,16 @@ export async function getProject(id: string): Promise<Project | undefined> {
 
 // ---- plugin packages ----
 
+/**
+ * Installed `.cspkg` record.
+ *
+ * Deliberately stores **no** `blob:` URLs. Object URLs are scoped to the
+ * document that created them, so persisting one writes a value that is
+ * guaranteed to be dead on the next session — the previous shape did exactly
+ * that (`entryUrl` / `assets`), which silently grew the database with
+ * unusable rows on every install. Re-hydrating a package requires re-reading
+ * the file, so only the package-relative paths are kept.
+ */
 export interface StoredPluginPackage {
   id: string;
   name: string;
@@ -141,8 +151,10 @@ export interface StoredPluginPackage {
   author: string;
   description: string;
   icon?: string;
-  entryUrl: string;
-  assets: Record<string, string>;
+  /** Package-relative entry path from the manifest (e.g. `dist/index.js`). */
+  entry: string;
+  /** Package-relative file list (paths only, no URLs). */
+  files: string[];
   installedAt: number;
 }
 

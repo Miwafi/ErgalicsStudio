@@ -178,6 +178,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const touched = touchProject(current);
       await saveProject(touched);
       set({ project: touched, dirty: false, status: 'saved' });
+      // Let plugins persist their own state alongside the project now that
+      // the project itself is durably stored.
+      usePluginStore.getState().notifyProjectLifecycle('save');
     } catch (err) {
       logger.error('project', 'save failed', err);
       set({ status: 'error' });

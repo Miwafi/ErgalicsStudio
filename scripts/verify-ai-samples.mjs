@@ -1,11 +1,8 @@
 // Diagnostic E2E: load each AI Training sample from the sample dialog and
 // capture the resulting toast text, so a parse failure is observable instead
 // of inferred.
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
-
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+import { startPreview, launchOptions, sleep } from './_harness.mjs';
 
 const SAMPLES = [
   'AI 训练 · 线性回归',
@@ -14,27 +11,18 @@ const SAMPLES = [
   'AI 训练 · MNIST 分类',
 ];
 
-(async () => {
-  const server = spawn(
-    process.execPath,
-    ['node_modules/vite/bin/vite.js', 'preview', '--port', '4211'],
-    { cwd: process.cwd(), stdio: 'ignore', detached: true },
-  );
-  server.unref();
-  await sleep(3500);
+const server = await startPreview(4211);
+let browser;
 
-  const browser = await chromium.launch({
-    executablePath: EDGE,
-    headless: true,
-    args: ['--no-sandbox'],
-  });
+(async () => {
+  browser = await chromium.launch(launchOptions());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
   page.on('pageerror', (e) => errors.push(e.message));
 
   const out = [];
-  await page.goto('http://localhost:4211/#/workbench', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/workbench`, { waitUntil: 'networkidle' });
   await sleep(1500);
 
   for (const name of SAMPLES) {
@@ -68,9 +56,13 @@ const SAMPLES = [
   out.push('=== ERRORS ===');
   out.push(errors.length ? errors.join('\n') : '(none)');
   console.log(out.join('\n'));
-  await browser.close();
-  server.kill();
-})().catch((e) => {
-  console.error('VERIFY AI SAMPLES FAILED:', e);
-  process.exit(1);
-});
+  if (errors.length) process.exitCode = 1;
+})()
+  .catch((e) => {
+    console.error('VERIFY AI SAMPLES FAILED:', e);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await browser?.close().catch(() => {});
+    server.stop();
+  });

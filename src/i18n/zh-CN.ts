@@ -104,6 +104,8 @@ export const zhCN: LocaleDictionary = {
   'workbench.perf.section.runtime': '运行状态',
   'workbench.project_name': '项目名称',
   'workbench.share': '分享',
+  'workbench.export_log': '导出运行日志',
+  'workbench.export_log_done': '运行日志已导出',
   'workbench.drag_hint': '将文件拖拽到此处',
 
   'project.new': '新建项目',

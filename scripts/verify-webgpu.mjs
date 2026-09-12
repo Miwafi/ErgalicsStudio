@@ -14,13 +14,8 @@
 // Requires a WebGPU-capable browser build. Headless Edge is launched with the
 // Chromium SwiftShader WebGPU flags so the test is deterministic on any
 // machine (software adapter, no physical GPU required).
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
-
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const PORT = 4289;
-const BASE = `http://localhost:${PORT}`;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+import { startPreview, launchOptions, sleep } from './_harness.mjs';
 
 const WEBGPU_ARGS = [
   '--no-sandbox',
@@ -33,20 +28,6 @@ const WEBGPU_ARGS = [
   '--enable-accelerated-2d-canvas',
   '--ignore-gpu-blocklist',
 ];
-
-async function waitForServer(url, timeoutMs = 30000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {
-      /* not up yet */
-    }
-    await sleep(500);
-  }
-  throw new Error(`server not ready at ${url}`);
-}
 
 async function waitForResult(page, timeoutMs = 120000) {
   const start = Date.now();
@@ -62,23 +43,17 @@ async function waitForResult(page, timeoutMs = 120000) {
   throw new Error('harness did not finish in time');
 }
 
+// Dev server (not `preview`): stage A loads /tests/e2e/webgpu.html, which is
+// only served by the dev server.
+const server = await startPreview(4289, 'dev');
+const BASE = server.url;
+
 (async () => {
-  const server = spawn(
-    process.execPath,
-    ['node_modules/vite/bin/vite.js', '--port', String(PORT), '--strictPort'],
-    { cwd: process.cwd(), stdio: 'ignore', detached: true },
-  );
-  server.unref();
   const out = [];
   const step = (label, v) => out.push(`${label}: ${JSON.stringify(v)}`);
   let browser;
   try {
-    await waitForServer(`${BASE}/`);
-    browser = await chromium.launch({
-      executablePath: EDGE,
-      headless: true,
-      args: WEBGPU_ARGS,
-    });
+    browser = await chromium.launch({ ...launchOptions(), args: WEBGPU_ARGS });
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const errors = [];
     const pageErrors = [];
@@ -154,6 +129,6 @@ async function waitForResult(page, timeoutMs = 120000) {
     process.exitCode = 1;
   } finally {
     if (browser) await browser.close().catch(() => {});
-    server.kill();
+    server.stop();
   }
 })();

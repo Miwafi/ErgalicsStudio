@@ -7,19 +7,26 @@ Every plugin implements the `Plugin` contract (`src/types/plugin.ts`):
 ```ts
 interface Plugin {
   readonly manifest: PluginManifest;
-  init(api: PluginApi): Promise<void> | void;
-  destroy(): Promise<void> | void;
-  activate(context: PluginRenderContext): Promise<void> | void;
-  deactivate(): Promise<void> | void;
+  init(api: PluginApi): Promise<void> | void;      // required
+  getParams(): ParamDefinition[] | Promise<...>;   // required
+  destroy?(): Promise<void> | void;
+  activate?(context: PluginRenderContext): Promise<void> | void;
+  deactivate?(): Promise<void> | void;
   render?(container: ContainerCapabilities): Promise<void> | void;
-  updateParams(params: Record<string, unknown>): Promise<void> | void;
-  getParams(): ParamDefinition[] | Promise<ParamDefinition[]>;
+  updateParams?(params: Record<string, unknown>): Promise<void> | void;
   compute?(input, onProgress?): Promise<ComputeResult>;
   loadData?(file: File): Promise<void> | void;
   getSupportedFormats?(): SupportedFormat[] | Promise<SupportedFormat[]>;
   renderToScene?(scene: Scene3DHandle): Promise<void> | void;
+  onProjectSave?(): Promise<void> | void;
+  onProjectLoad?(): Promise<void> | void;
 }
 ```
+
+Only `manifest`, `init` and `getParams` are required — the host cannot
+register, wire, or configure a plugin without them. Everything else is
+optional and probed with `?.` before being called, which is what lets a
+minimal third-party package implement just `render`.
 
 The host drives the lifecycle:
 
@@ -30,7 +37,14 @@ The host drives the lifecycle:
 3. **params** — `getParams()` is resolved (possibly asynchronously — e.g. a
    sandboxed plugin answers over RPC) and shown in the right panel;
    user edits arrive via `updateParams`.
-4. **deactivate / destroy** — the plugin releases its resources.
+4. **deactivate / destroy** — `deactivate()` runs when the plugin stops
+   being the active one (stop timers and animation loops, keep state);
+   `destroy()` runs on unload and must release everything. Unloading an
+   *active* plugin calls both, in that order.
+5. **project hooks** — `onProjectSave()` fires after the project has been
+   durably persisted; `onProjectLoad()` fires after a project's plugin state
+   has been restored. Both are best-effort: a throwing hook is logged and
+   never aborts the save/load that triggered it.
 
 ## Manifest
 
@@ -79,10 +93,65 @@ and the host toggles visibility for you.
 
 Plugins interact with the host through a small, capability-limited API:
 locale (`locale`, `t`, `onLocaleChange`), status/perf (`setStatus`,
-`reportGpuTime`, `reportDataScale`), notifications (`notify`), files
-(`openFile`, `readText`, `readBinary`), project-scoped persistence
-(`getParam`, `setParam`), and — when a WebGPU device is available — GPU
-compute (`gpu`, see [Native Core & WebGPU](native-core)).
+`reportGpuTime`, `reportDataScale`), notifications (`notify`), **logging**
+(`log`), **result export** (`exportFile`), **intermediate-result caching**
+(`cache`), files (`openFile`, `readText`, `readBinary`), project-scoped
+persistence (`getParam`, `setParam`), and — when a WebGPU device is available
+— GPU compute (`gpu`, see [Native Core & WebGPU](native-core)).
+
+### Logging (`api.log`)
+
+```ts
+api.log('info', 'loaded 4096 bodies', { file: file.name, ms: 12.4 });
+```
+
+Every line is recorded under the `plugin:<id>` scope into a bounded host
+buffer and ships with **导出运行日志** (Top Bar → 更多), together with the
+parameter snapshot and the run history. Use it instead of `console.*`:
+console output is lost on reload and never reaches a bug report.
+
+| level   | when to use                                              |
+| ------- | -------------------------------------------------------- |
+| `debug` | per-step detail, normally hidden                         |
+| `info`  | lifecycle and data milestones                            |
+| `warn`  | recovered problems (skipped rows, clamped parameters)    |
+| `error` | failures the user must see                               |
+
+Inside the isolated sandbox `log` is delivered over the RPC bridge, so it is
+fire-and-forget — it never throws and never blocks the caller.
+
+### Result export (`api.exportFile`)
+
+```ts
+api.exportFile('cleaned-series.csv', csvText, 'text/csv');
+```
+
+Hands a string, `ArrayBuffer`, or `Blob` to the host, which triggers a
+download and releases the object URL. This is the sanctioned way to get
+derived data out of a plugin (cleaned tables, fitted parameters, metrics).
+
+### Intermediate-result cache (`api.cache`)
+
+```ts
+const key = `${file.name}:${file.size}`;
+const cached = await api.cache.get<Float64Array>(key);
+if (cached) return cached;
+const parsed = parseExpensive(file);
+await api.cache.set(key, parsed, 60 * 60 * 1000); // 1 h
+```
+
+A plugin-scoped, LRU-bounded (32 entries by default) scratch space for
+results that are expensive to recompute but must not be persisted. Every
+method is async because inside the sandbox the cache lives on the host.
+It is dropped automatically when the plugin is unloaded — anything that must
+survive a reload belongs in `setParam`.
+
+### Sandbox caveat: promise-returning members
+
+`getParam`, `setParam` and `cache.*` cross the RPC bridge inside the isolated
+worker, so they resolve as promises there even though the host signatures are
+synchronous. Always `await` them and never rely on a synchronous return
+value if your package is meant to run in both contexts.
 
 ### GPU compute
 
@@ -115,6 +184,36 @@ const result = await data.read();            // readback copy (read() handles it
 > so a compute storage buffer cannot be mapped directly. Create it with
 > `STORAGE | COPY_DST | COPY_SRC`; `read()` copies the results into a separate
 > `MAP_READ | COPY_DST` readback buffer internally.
+
+## Traceability: runs, parameters and logs
+
+Reproducibility is a first-class concern, so the host records what happened
+without any plugin code:
+
+- **Run history** — every host-driven data import is recorded with the plugin
+  id, plugin version, file name, byte count, duration and outcome via
+  `pluginStore.beginRun()` / `finishRun()`.
+- **Parameter snapshot** — `exportParameterSnapshot()` freezes each loaded
+  plugin's *live* parameters next to its version, so a result can be
+  attributed to the exact configuration that produced it.
+- **Log buffer** — the host logger keeps a bounded ring (500 records by
+  default, tunable with `configureLogger({ bufferSize })`) of every
+  `logger` / `api.log` line.
+
+**导出运行日志** (Top Bar → 更多) bundles all three into one JSON file:
+
+```jsonc
+{
+  "generatedAt": "2026-09-12T11:30:00.000Z",
+  "plugins":     [{ "id": "example.scatter", "version": "1.0.0", "active": true }],
+  "parameters":  { "example.scatter": { "version": "1.0.0", "params": { "size": 3 } } },
+  "runs":        [{ "id": "run-1", "pluginId": "example.scatter",
+                    "kind": "data-import", "label": "clusters.csv",
+                    "startedAt": 1757681400000, "durationMs": 42, "ok": true }],
+  "logs":        [{ "at": "...", "level": "info", "scope": "plugin:example.scatter",
+                    "message": "loaded 4096 points" }]
+}
+```
 
 ## Built-in example plugins
 

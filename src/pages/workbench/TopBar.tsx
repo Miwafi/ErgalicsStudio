@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useT } from '@/i18n';
 import { DEFAULT_PROJECT_NAME } from '@/types/project';
 import { useProjectStore } from '@/stores/projectStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { useAppStore } from '@/stores/appStore';
+import { downloadBlob } from '@/core/download';
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import { ThemeSwitcher } from '@/components/ThemeSwitcher';
 import { Dropdown } from '@/components/Dropdown';
@@ -142,6 +144,24 @@ export function TopBar() {
               onClick: () => fileInputRef.current?.click(),
             },
             { key: 'save_as', label: t('project.save_as'), onClick: () => saveAs() },
+            {
+              key: 'export_log',
+              label: t('workbench.export_log'),
+              onClick: () => {
+                void usePluginStore
+                  .getState()
+                  .exportDiagnostics()
+                  .then((json) => {
+                    downloadBlob(
+                      `ergalics-run-log-${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
+                      json,
+                      'application/json',
+                    );
+                    notify('success', t('workbench.export_log_done'));
+                  })
+                  .catch(() => notify('error', t('workbench.export_log')));
+              },
+            },
           ]}
         />
         <input

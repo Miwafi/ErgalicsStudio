@@ -1,28 +1,17 @@
 // Verify the functional fixes: auto-loaded plugins, auto-created project,
 // reactive params, recent project restore.
 // Usage: node scripts/smoke-test.mjs
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { startPreview, launchOptions, sleep } from './_harness.mjs';
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-
-const server = spawn(
-  process.execPath,
-  ['node_modules/vite/bin/vite.js', 'preview', '--port', '4173'],
-  { cwd: process.cwd(), stdio: 'ignore', detached: true },
-);
-server.unref();
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-await sleep(3500);
+const server = await startPreview(4173);
 
 const errors = [];
 let page;
 let browser;
 try {
   browser = await chromium.launch({
-    executablePath: EDGE,
-    headless: true,
+    ...launchOptions(),
     args: ['--no-sandbox', '--enable-unsafe-swiftshader'],
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -32,7 +21,7 @@ try {
   const out = [];
   const step = (label, v) => out.push(`${label}: ${JSON.stringify(v)}`);
 
-  await page.goto('http://localhost:4173/#/', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/`, { waitUntil: 'networkidle' });
   await sleep(1000);
   await page.locator('.welcome-enter').click();
   await sleep(2000);
@@ -66,5 +55,5 @@ try {
   process.exit(1);
 } finally {
   if (browser) await browser.close().catch(() => {});
-  server.kill();
+  server.stop();
 }

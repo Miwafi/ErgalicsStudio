@@ -1,17 +1,13 @@
 ﻿// Quick E2E check: Point Cloud 3D plugin renders into the host three scene.
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { startPreview, launchOptions, shot, sleep } from './_harness.mjs';
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let server;
+let browser;
 
 (async () => {
-  const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', '4199'], {
-    cwd: process.cwd(), stdio: 'ignore', detached: true,
-  });
-  server.unref();
-  await sleep(3500);
-  const browser = await chromium.launch({ executablePath: EDGE, headless: true, args: ['--no-sandbox'] });
+  server = await startPreview(4199);
+  browser = await chromium.launch(launchOptions());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -19,7 +15,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const out = [];
   const step = (l, v) => out.push(`${l}: ${JSON.stringify(v)}`);
 
-  await page.goto('http://localhost:4199/#/', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/`, { waitUntil: 'networkidle' });
   await sleep(1000);
   await page.locator('.welcome-enter').click();
   await sleep(1800);
@@ -44,7 +40,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const el = [...document.querySelectorAll('.perf-value, .status-bar span')].map((e) => e.textContent).join(' | ');
     return el;
   }));
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/pointcloud3d.png' });
+  await page.screenshot({ path: shot('pointcloud3d.png') });
 
   // Params should expose the 3D controls (point size slider + color select)
   step('3D params present', await page.locator('.param-panel .param-range').count() > 0);
@@ -52,10 +48,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   out.push('=== ERRORS ===');
   out.push(errors.length ? errors.join('\n') : '(none)');
   console.log(out.join('\n'));
-  await browser.close();
-  server.kill();
-  if (errors.length) process.exit(1);
-})().catch((e) => {
-  console.error('VERIFY 3D FAILED:', e);
-  process.exit(1);
-});
+  if (errors.length) process.exitCode = 1;
+})()
+  .catch((e) => {
+    console.error('VERIFY 3D FAILED:', e);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await browser?.close().catch(() => {});
+    server?.stop();
+  });

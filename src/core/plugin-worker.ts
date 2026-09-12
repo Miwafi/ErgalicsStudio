@@ -16,6 +16,8 @@ import type {
   ComputeProgress,
   Plugin,
   PluginApi,
+  PluginCacheApi,
+  PluginLogLevel,
   PluginManifest,
   SupportedFormat,
 } from '@/types/plugin';
@@ -103,6 +105,25 @@ export function createPluginWorkerRuntime(
     reportGpuTime: (ms) => callApi('reportGpuTime', [ms]),
     reportDataScale: (n) => callApi('reportDataScale', [n]),
     notify: (kind, message) => callApi('notify', [kind, message]),
+    // Logging is fire-and-forget: a log line must never await a host reply,
+    // and it must never throw into plugin code (best-effort observability).
+    log: (level: PluginLogLevel, message: string, details?: unknown) => {
+      try {
+        postToHost({ event: 'log', level, message, details });
+      } catch {
+        /* logging must never break the caller */
+      }
+    },
+    exportFile: (fileName, data, mimeType) => callApi('exportFile', [fileName, data, mimeType]),
+    // Nested surface flattened onto the bridge; the host resolves dotted
+    // names back onto the real `api.cache` object (see sandbox.resolveApiMember).
+    cache: {
+      get: (key) => callApi('cache.get', [key]),
+      set: (key, value, ttlMs) => callApi('cache.set', [key, value, ttlMs]),
+      delete: (key) => callApi<boolean>('cache.delete', [key]),
+      clear: () => callApi('cache.clear'),
+      keys: () => callApi<string[]>('cache.keys'),
+    } satisfies PluginCacheApi,
     openFile: () => callApi<File | null>('openFile'),
     readText: (file) => callApi<string>('readText', [file]) as unknown as Promise<string>,
     readBinary: (file) =>
@@ -120,6 +141,14 @@ export function createPluginWorkerRuntime(
         return undefined;
       case 'destroy':
         await plugin.destroy?.();
+        // Drop every piece of runtime state with the plugin: a re-boot in the
+        // same worker must not inherit stale listeners or unresolved calls.
+        localeListeners.clear();
+        for (const [, p] of pendingApi) {
+          p.reject(new Error('plugin destroyed'));
+        }
+        pendingApi.clear();
+        plugin = null;
         return undefined;
       case 'activate': {
         const container = args[0] as Record<string, unknown>;
@@ -148,7 +177,7 @@ export function createPluginWorkerRuntime(
         await plugin.deactivate?.();
         return undefined;
       case 'updateParams':
-        await plugin.updateParams(args[0] as Record<string, unknown>);
+        await plugin.updateParams?.(args[0] as Record<string, unknown>);
         return undefined;
       case 'getParams':
         return plugin.getParams();
@@ -157,6 +186,12 @@ export function createPluginWorkerRuntime(
         return undefined;
       case 'getSupportedFormats':
         return plugin.getSupportedFormats?.() ?? ([] as SupportedFormat[]);
+      case 'onProjectSave':
+        await plugin.onProjectSave?.();
+        return undefined;
+      case 'onProjectLoad':
+        await plugin.onProjectLoad?.();
+        return undefined;
       case 'compute': {
         const [input, onProgress] = args as [unknown, ((p: ComputeProgress) => void) | undefined];
         const result = await plugin.compute?.(input, onProgress);
@@ -221,7 +256,18 @@ export function createPluginWorkerRuntime(
             if (!instance || typeof instance !== 'object') {
               throw new Error('entry did not return a plugin object');
             }
-            instance.manifest.id = manifest.id;
+            if (!instance.manifest || typeof instance.manifest !== 'object') {
+              // Without this the failure surfaced as "Cannot set properties of
+              // undefined", which tells an author nothing about the real cause.
+              throw new Error('entry did not expose a plugin manifest');
+            }
+            // Keep the package manifest authoritative for the id so a plugin
+            // cannot impersonate another one's persisted parameters.
+            try {
+              instance.manifest.id = manifest.id;
+            } catch (err) {
+              throw new Error(`manifest is not writable: ${String(err)}`);
+            }
             plugin = instance;
             postReply(req.id, true, 'ready');
           } catch (err) {

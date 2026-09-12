@@ -1,20 +1,13 @@
 ﻿// Verify the fixes: data-driven particles, no auto-run, point-cloud empty
 // state + auto-fit, unified mono font, toggle Run control, topbar cluster.
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
+import { startPreview, launchOptions, shot, sleep } from './_harness.mjs';
 
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const server = await startPreview(4177);
+let browser;
 
 (async () => {
-  const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', '4177'], {
-    cwd: process.cwd(), stdio: 'ignore', detached: true,
-  });
-  server.unref();
-  await sleep(3500);
-  const browser = await chromium.launch({
-    executablePath: EDGE, headless: true, args: ['--no-sandbox'],
-  });
+  browser = await chromium.launch(launchOptions());
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -45,7 +38,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       .locator('button', { hasText: '加载' })
       .click();
 
-  await page.goto('http://localhost:4177/#/', { waitUntil: 'networkidle' });
+  await page.goto(`${server.url}/#/`, { waitUntil: 'networkidle' });
   await sleep(1200);
   await page.locator('.welcome-enter').click();
   await sleep(1800);
@@ -93,7 +86,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   s = await sample();
   step('particles galaxy has teal dots (static)', hasColor(s, '45,212,191'));
   step('run button still idle after load', (await runLabel()).trim());
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/fix-02-particles-galaxy.png' });
+  await page.screenshot({ path: shot('fix-02-particles-galaxy.png') });
 
   // --- press Run -> simulation starts ---
   await page.locator('.param-panel button.btn-block').first().click();
@@ -105,7 +98,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1200);
   s = await sample();
   step('pointcloud empty canvas renders', s.top.length > 0);
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/fix-03-pointcloud-empty.png' });
+  await page.screenshot({ path: shot('fix-03-pointcloud-empty.png') });
 
   // --- load diamond.xyz -> blue points, auto-fit ---
   await page.locator('.topbar-cluster .cluster-btn', { hasText: '示例' }).click();
@@ -114,7 +107,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1600);
   s = await sample();
   step('pointcloud diamond has blue points', hasColor(s, '37,99,235'));
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/fix-04-pointcloud-diamond.png' });
+  await page.screenshot({ path: shot('fix-04-pointcloud-diamond.png') });
 
   // --- time series: load telemetry -> teal + amber lines ---
   await page.locator('.plugin-item[data-plugin-id="example.timeseries"]').click();
@@ -125,7 +118,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1600);
   s = await sample();
   step('timeseries telemetry has teal+amber lines', hasColorAnywhere(s, '45,212,191') && hasColorAnywhere(s, '251,191,36'));
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/fix-05-timeseries.png' });
+  await page.screenshot({ path: shot('fix-05-timeseries.png') });
 
   // --- histogram: load distribution.dat -> teal bars ---
   await page.locator('.plugin-item[data-plugin-id="example.histogram"]').click();
@@ -136,7 +129,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1600);
   s = await sample();
   step('histogram bars render (teal)', hasColor(s, '45,212,191'));
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/fix-06-histogram.png' });
+  await page.screenshot({ path: shot('fix-06-histogram.png') });
 
   // --- heatmap: load field.json -> viridis ramp ---
   await page.locator('.plugin-item[data-plugin-id="example.heatmap"]').click();
@@ -147,7 +140,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1600);
   s = await sample();
   step('heatmap renders viridis colors', s.top.length > 3);
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/fix-07-heatmap.png' });
+  await page.screenshot({ path: shot('fix-07-heatmap.png') });
 
   // --- image viewer: load test-pattern.png -> many colors ---
   await page.locator('.plugin-item[data-plugin-id="example.image"]').click();
@@ -158,15 +151,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(1800);
   s = await sample();
   step('image viewer renders pattern (many colors)', s.distinct > 50);
-  await page.screenshot({ path: 'C:/Users/HUAWEI/AppData/Local/Temp/opencode/shots/fix-08-imageviewer.png' });
+  await page.screenshot({ path: shot('fix-08-imageviewer.png') });
 
   out.push('=== ERRORS ===');
   out.push(errors.length ? errors.join('\n') : '(none)');
   console.log(out.join('\n'));
-  await browser.close();
-  server.kill();
-  if (errors.length) process.exit(1);
-})().catch((e) => {
-  console.error('VERIFY FAILED:', e);
-  process.exit(1);
-});
+  if (errors.length) process.exitCode = 1;
+})()
+  .catch((e) => {
+    console.error('VERIFY FAILED:', e);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await browser?.close().catch(() => {});
+    server.stop();
+  });
