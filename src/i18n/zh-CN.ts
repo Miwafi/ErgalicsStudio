@@ -139,6 +139,7 @@ export const zhCN: LocaleDictionary = {
   'plugin.load_failed': '插件加载失败',
   'plugin.invalid_manifest': '插件清单无效',
   'plugin.file_format': '插件文件格式无效',
+  'plugin.choose_file': '选择插件包文件（.cspkg）',
   'plugin.active': '已激活',
   'plugin.inactive': '未激活',
   'plugin.version': '版本',

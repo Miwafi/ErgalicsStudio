@@ -38,34 +38,6 @@
   color: var(--color-text-primary);
 }
 
-.brand-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent-soft);
-  border: 1px solid var(--color-accent);
-  color: var(--color-accent-text);
-  font-size: var(--font-size-sm);
-}
-
-.brand-logo img {
-  display: block;
-  width: 18px;
-  height: 18px;
-  user-select: none;
-  transition: transform 0.18s ease, filter 0.18s ease;
-}
-
-/* Floating shadow: lift + soft glow under the icon when hovering the brand */
-.brand:hover .brand-logo img,
-.brand-logo:hover img {
-  transform: translateY(-1px) scale(1.06);
-  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 6px var(--color-accent));
-}
-
 .brand-name {
   font-family: var(--font-mono);
   font-weight: 600;

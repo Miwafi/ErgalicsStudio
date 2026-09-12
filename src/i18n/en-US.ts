@@ -135,6 +135,7 @@ export const enUS: LocaleDictionary = {
   'plugin.load_failed': 'Failed to load plugin',
   'plugin.invalid_manifest': 'Invalid plugin manifest',
   'plugin.file_format': 'Invalid plugin package',
+  'plugin.choose_file': 'Choose a plugin package (.cspkg)',
   'plugin.active': 'Active',
   'plugin.inactive': 'Inactive',
   'plugin.version': 'Version',
