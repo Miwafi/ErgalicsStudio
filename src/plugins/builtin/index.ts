@@ -44,6 +44,9 @@ import { kochManifest } from './koch';
 import { barnsleyManifest } from './barnsley';
 import { fireworksManifest } from './fireworks';
 import { truchetManifest } from './truchet';
+import { electromagManifest } from './electromag';
+import { opticsManifest } from './optics';
+import { structureManifest } from './structure';
 
 export interface BuiltinPluginInfo {
   manifest: PluginManifest;
@@ -142,6 +145,33 @@ export const BUILTIN_PLUGINS: BuiltinPluginInfo[] = [
     autoload: true,
     load: async () => {
       const mod = await import('./ai-training');
+      return mod.default();
+    },
+  },
+  // ---- Interactive physics / optics labs (default-loaded) ------------------
+  // Hands-on 2-D labs: draggable objects and on-canvas interaction. These are
+  // product flagship demos, so they ship as default plugins — loaded on
+  // startup alongside the other simulation flagships and always listed in the
+  // built-in / market panels. Each one has matching entries in
+  // examples/data/ surfaced by the top-bar "示例" dialog.
+  {
+    manifest: electromagManifest,
+    load: async () => {
+      const mod = await import('./electromag');
+      return mod.default();
+    },
+  },
+  {
+    manifest: opticsManifest,
+    load: async () => {
+      const mod = await import('./optics');
+      return mod.default();
+    },
+  },
+  {
+    manifest: structureManifest,
+    load: async () => {
+      const mod = await import('./structure');
       return mod.default();
     },
   },

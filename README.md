@@ -1,6 +1,8 @@
 <div align="center">
 
-<h1>◈ Ergalics Studio</h1>
+<img src="ico.ico" alt="Ergalics Studio logo" width="96" />
+
+<h1>Ergalics Studio</h1>
 
 <p><b>An in-browser scientific computing workstation</b> — interactive data
 exploration, GPU compute scheduling, and a sandboxed plugin system, all
@@ -613,6 +615,30 @@ angle differs by 0.001 rad; the HUD reads out the live ghost divergence
 (China) / Web Mercator / equirectangular projections.
 
 ![GeoJSON Map — China provinces choropleth in the Albers (China) projection](docs/geojsonmap.png)
+
+Three interactive physics labs round out the scientific registry — the
+flagship hands-on demos where objects are manipulated directly on the
+canvas:
+
+**Electromagnetism** — draggable charges under Coulomb + Lorentz forces in
+a uniform B field (strength and direction are independent parameters).
+The cyclotron sample sends same-sign charges into spirals whose radius is
+set by velocity, mass and B.
+
+![Electromagnetism — three positive charges spiraling in a uniform magnetic field (dot lattice = out-of-screen B), trails enabled](docs/Cyclotron.png)
+
+**Optics Lab** — geometric ray tracing with thin convex/concave lenses, a
+triangular prism with Snell refraction and dispersion, and a light screen;
+every element can be dragged on the canvas.
+
+![Optics Lab — a white beam dispersing through a triangular prism into a spectrum, collected on the screen](docs/light.png)
+
+**Structural Mechanics** — a pin-jointed truss that carries its load live:
+members are colored by axial force (orange = tension, cyan = compression)
+with utilization readouts, and snap once overloaded until the frame
+collapses.
+
+![Structural Mechanics — a 17-member deck truss carrying two weights, members colored by axial force (orange = tension, cyan = compression)](docs/structure.png)
 
 **Fun & utility plugins** (`autoload: false`, 10 total — loaded on demand
 from the built-in panel or marketplace tab):

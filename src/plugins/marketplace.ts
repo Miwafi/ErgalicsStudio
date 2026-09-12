@@ -60,6 +60,21 @@ const OVERLAY: Record<string, Overlay> = {
   'example.wave': { category: 'scientific', tags: ['physics', 'waves', 'interference', 'gpu'], popularity: 78 },
   'example.pendulum': { category: 'scientific', tags: ['physics', 'chaos', 'mechanics'], popularity: 70 },
   'example.geomap': { category: 'scientific', tags: ['geography', 'geojson', 'choropleth', 'map'], popularity: 75 },
+  'example.electromag': {
+    category: 'scientific',
+    tags: ['physics', 'electromagnetism', 'field', 'interactive', 'canvas'],
+    popularity: 79,
+  },
+  'example.optics': {
+    category: 'scientific',
+    tags: ['physics', 'optics', 'ray-tracing', 'refraction', 'interactive'],
+    popularity: 82,
+  },
+  'example.structure': {
+    category: 'scientific',
+    tags: ['physics', 'mechanics', 'truss', 'collapse', 'interactive'],
+    popularity: 80,
+  },
 };
 
 // Community submissions not yet bundled — shown as "coming soon".

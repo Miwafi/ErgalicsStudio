@@ -267,6 +267,8 @@ export const zhCN: LocaleDictionary = {
 
   'workbench.example.title': '示例',
   'workbench.example.datasets': '数据集',
+  'workbench.example.group_labs': '交互式物理 / 光学实验室',
+  'workbench.example.group_datasets': '通用示例数据',
   'workbench.example.pipelines': '流程管线',
   'workbench.example.blocks': '积木示例',
   'workbench.example.code_samples': '代码示例',
