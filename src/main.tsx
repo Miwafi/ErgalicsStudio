@@ -4,6 +4,7 @@ import App from './App';
 import './styles/global.css';
 import './styles/app.css';
 import './styles/blocks.css';
+import './styles/animations.css';
 
 // Global error capture (spec §11.2 application-level boundary).
 window.addEventListener('error', (event) => {

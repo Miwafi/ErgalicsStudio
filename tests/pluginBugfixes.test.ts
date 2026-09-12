@@ -7,6 +7,8 @@
 //      launched a domain-crossing shock, and a diverged run never recovered.
 //   4. Every Start/Stop toggle needed two clicks, and importing data left a
 //      running simulation running.
+//   5. Structure: entering the plugin (and loading a truss) started the
+//      simulation outright instead of waiting for ▶ Run.
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import {
   FLUID_DIRECTIONS,
@@ -20,8 +22,9 @@ import { FluidPlugin } from '@/plugins/builtin/fluid';
 import { ParticlePlugin } from '@/plugins/builtin/particles';
 import { WavePlugin } from '@/plugins/builtin/wave';
 import { DoublePendulumPlugin } from '@/plugins/builtin/doublePendulum';
+import { StructurePlugin } from '@/plugins/builtin/structure';
 import type { NBodyBody } from '@/core/wgsl';
-import type { ParamDefinition, PluginApi } from '@/types/plugin';
+import type { ContainerCapabilities, ParamDefinition, PluginApi } from '@/types/plugin';
 
 // The animation loops schedule frames; node has no rAF.
 beforeAll(() => {
@@ -360,5 +363,58 @@ describe('loading data stops the simulation', () => {
 
     await plugin.loadData(pendulumIC());
     expect(toggleValue(plugin.getParams(), 'start')).toBe(false);
+  });
+});
+
+// ---- entering a plugin must not start it ---------------------------------
+
+describe('structure plugin opens paused', () => {
+  const truss = () =>
+    new File(
+      [
+        JSON.stringify({
+          nodes: [
+            { x: 0, y: 0.5 },
+            { x: 0.5, y: 0.5 },
+            { x: 1, y: 0.5 },
+          ],
+          members: [
+            { a: 0, b: 1 },
+            { a: 1, b: 2 },
+          ],
+        }),
+      ],
+      'truss.json',
+    );
+
+  it('opens empty, refuses ▶ Run without data, and requires ▶ Run once loaded', async () => {
+    const plugin = new StructurePlugin();
+    await plugin.init(fakeApi());
+    await plugin.activate({
+      container: { canvas2d: null } as unknown as ContainerCapabilities,
+    });
+
+    // The plugin must not fabricate a truss on open — and with nothing staged
+    // it must refuse to run instead of "running" an empty bench.
+    expect((plugin as any).joints.length).toBe(0);
+    expect(toggleValue(plugin.getParams(), 'run')).toBe(false);
+    plugin.updateParams({ run: true });
+    expect(toggleValue(plugin.getParams(), 'run')).toBe(false);
+
+    // The run toggle is the only way in once a structure is loaded.
+    await plugin.loadData(truss());
+    expect(toggleValue(plugin.getParams(), 'run')).toBe(false);
+
+    plugin.updateParams({ run: true });
+    expect(toggleValue(plugin.getParams(), 'run')).toBe(true);
+
+    // Loading a structure halts the run and stages the new one paused.
+    await plugin.loadData(truss());
+    expect(toggleValue(plugin.getParams(), 'run')).toBe(false);
+
+    // …and it can still be started again afterwards.
+    plugin.updateParams({ run: true });
+    expect(toggleValue(plugin.getParams(), 'run')).toBe(true);
+    plugin.updateParams({ run: false });
   });
 });

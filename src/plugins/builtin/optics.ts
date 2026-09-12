@@ -63,6 +63,12 @@ interface OpticsState {
   divergence: number; // total fan angle (rad)
   dispersion: number; // prism index spread
   prismIndex: number; // base refractive index (middle wavelength)
+  /**
+   * True once a bench layout has been loaded. The bench never fabricates a
+   * default arrangement — without data it stays an empty canvas, so the
+   * geometry always comes from the user's file or a sample.
+   */
+  hasData: boolean;
 }
 
 const CANVAS_W = 600;
@@ -110,6 +116,7 @@ export class OpticsPlugin implements Plugin {
     divergence: 0.5,
     dispersion: 0.04,
     prismIndex: 1.52,
+    hasData: false,
   };
   // Element positions (pixels).
   private source: Pt = { x: 70, y: CANVAS_H / 2 };
@@ -185,6 +192,9 @@ export class OpticsPlugin implements Plugin {
   }
 
   private onDown = (e: PointerEvent) => {
+    // Nothing is grabbable before a layout is loaded — the bench is empty, so
+    // a drag would otherwise grab an invisible element.
+    if (!this.state.hasData) return;
     const p = this.toLocal(e);
     if (Math.hypot(p.x - this.source.x, p.y - this.source.y) < 16) {
       this.drag = 'source';
@@ -355,6 +365,7 @@ export class OpticsPlugin implements Plugin {
     if (typeof o.focal === 'number') this.state.focal = o.focal;
     if (typeof o.prism === 'boolean') this.state.showPrism = o.prism;
     if (typeof o.screen === 'boolean') this.state.showScreen = o.screen;
+    this.state.hasData = true;
     this.draw();
   }
 
@@ -374,6 +385,24 @@ export class OpticsPlugin implements Plugin {
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.fillStyle = getComputedStyle(canvas).backgroundColor || '#0a0e13';
     g.fillRect(0, 0, cw, ch);
+
+    if (!this.state.hasData) {
+      // Empty state: no bench layout loaded — never render a fabricated
+      // arrangement of source, lens and screen.
+      g.fillStyle = 'rgba(150, 165, 185, 0.85)';
+      g.font = `${this.api?.locale === 'zh-CN' ? '12px "Microsoft YaHei"' : '12px Consolas'}, monospace`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(
+        this.api?.locale === 'zh-CN'
+          ? '未加载数据 — 拖入 JSON 光路布局或打开「示例数据」'
+          : 'No data — drop a JSON optics layout or open sample data',
+        cw / 2,
+        ch / 2,
+      );
+      return;
+    }
+
     // Letterbox the fixed optical bench into whatever viewport the host gives
     // us: geometry and hit-testing stay in bench coordinates.
     const vs = Math.min(cw / CANVAS_W, ch / CANVAS_H) || 1;

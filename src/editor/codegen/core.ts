@@ -38,22 +38,32 @@ function bool(value: boolean, c: Ctx): string {
 }
 
 function binop(op: BinaryOperator, c: Ctx): string {
-  if (op === 'and') return c.lang === 'js' ? '&&' : 'and';
-  if (op === 'or') return c.lang === 'js' ? '||' : 'or';
+  // R has no `and`/`or` keywords (they would be a parse error) — it uses the
+  // scalar `&&`/`||` operators like JS. Modulo in R is `%%`, not `%`.
+  if (op === 'and') return c.lang === 'python' ? 'and' : '&&';
+  if (op === 'or') return c.lang === 'python' ? 'or' : '||';
+  if (op === '%' && c.lang === 'r') return '%%';
   return op;
 }
 
 function binaryExpr(node: Extract<IRNode, { kind: 'BinaryOp' }>, c: Ctx): string {
   const left = expr(node.left, c);
   const right = expr(node.right, c);
-  if (node.op === '//' && c.lang === 'js') {
-    return `Math.floor(${left} / ${right})`;
+  // Integer division has no infix form in JS or R.
+  if (node.op === '//') {
+    if (c.lang === 'js') return `Math.floor(${left} / ${right})`;
+    if (c.lang === 'r') return `floor(${left} / ${right})`;
   }
   return `(${left} ${binop(node.op, c)} ${right})`;
 }
 
 function unaryExpr(node: Extract<IRNode, { kind: 'UnaryOp' }>, c: Ctx): string {
-  if (node.op === 'not') return c.lang === 'js' ? `!${expr(node.operand, c)}` : `not ${expr(node.operand, c)}`;
+  // Python spells logical negation `not`; JS and R both use `!`.
+  if (node.op === 'not') {
+    return c.lang === 'python'
+      ? `not ${expr(node.operand, c)}`
+      : `!(${expr(node.operand, c)})`;
+  }
   // Parenthesize so a negative literal operand (`-(-5)`) never renders as
   // `--5`, which is a decrement syntax error in JS.
   return `-(${expr(node.operand, c)})`;
@@ -86,6 +96,12 @@ function sliceExpr(node: Extract<IRNode, { kind: 'ListSlice' }>, c: Ctx): string
 }
 
 function dictExpr(node: Extract<IRNode, { kind: 'Dict' }>, c: Ctx): string {
+  if (c.lang === 'r') {
+    // `{ 'k': v }` is not an R literal (a bare `{ ... }` is a block). A named
+    // list is R's idiomatic ordered mapping; quoted tags are legal call syntax.
+    const items = node.entries.map((e) => `${quote(e.key)} = ${expr(e.value, c)}`);
+    return `list(${items.join(', ')})`;
+  }
   const items = node.entries.map((e) => `${quote(e.key)}: ${expr(e.value, c)}`);
   return `{ ${items.join(', ')} }`;
 }
@@ -99,13 +115,23 @@ function expr(node: IRNode, c: Ctx): string {
     case 'Boolean':
       return bool(node.value, c);
     case 'Null':
-      return c.lang === 'js' ? 'null' : 'None';
+      // R has no `None`; its null object is `NULL`.
+      return c.lang === 'js' ? 'null' : c.lang === 'r' ? 'NULL' : 'None';
     case 'VarRef':
       return node.name;
-    case 'List':
-      return `[${node.items.map((i) => expr(i, c)).join(', ')}]`;
-    case 'ListIndex':
-      return `${expr(node.list, c)}[${expr(node.index, c)}]`;
+    case 'List': {
+      // `[a, b]` is a parse error in R — the vector/list constructor is `list`.
+      const items = node.items.map((i) => expr(i, c)).join(', ');
+      return c.lang === 'r' ? `list(${items})` : `[${items}]`;
+    }
+    case 'ListIndex': {
+      // R subscripts start at 1, so a numeric index needs the +1 offset. A
+      // string index is a name lookup and must be left alone.
+      const list = expr(node.list, c);
+      const idx = expr(node.index, c);
+      if (c.lang === 'r' && node.index.kind === 'Number') return `${list}[[${idx} + 1]]`;
+      return `${list}[${c.lang === 'r' ? `[${idx}]` : idx}]`;
+    }
     case 'ListSlice':
       return sliceExpr(node, c);
     case 'Dict':
@@ -170,16 +196,27 @@ function block(lines: string[]): string {
 function ifStmt(node: Extract<IRNode, { kind: 'If' }>, c: Ctx, level: number): string {
   const ind = c.indentUnit.repeat(level);
   const usesBraces = c.lang !== 'python';
+  // R's parser rejects an `else` that starts a new line right after a closing
+  // `}` ("unexpected else"), so R chains must render `} else {` on one line.
+  const inlineElse = c.lang === 'r';
   const lines: string[] = [];
   node.branches.forEach((b, i) => {
     const keyword = i === 0 ? 'if' : usesBraces ? 'else if' : 'elif';
     const cond = usesBraces ? `(${expr(b.cond, c)})` : expr(b.cond, c);
-    lines.push(`${ind}${keyword} ${cond}${usesBraces ? ' {' : ':'}`);
+    if (i === 0) {
+      lines.push(`${ind}${keyword} ${cond}${usesBraces ? ' {' : ':'}`);
+    } else if (inlineElse) {
+      // The previous branch already pushed its closing brace as the last line.
+      lines[lines.length - 1] = `${lines[lines.length - 1]} ${keyword} ${cond} {`;
+    } else {
+      lines.push(`${ind}${keyword} ${cond}${usesBraces ? ' {' : ':'}`);
+    }
     b.body.forEach((s) => lines.push(stmt(s, c, level + 1)));
     if (usesBraces) lines.push(`${ind}}`);
   });
   if (node.elseBody && node.elseBody.length > 0) {
-    lines.push(`${ind}${usesBraces ? 'else {' : 'else:'}`);
+    if (inlineElse) lines[lines.length - 1] = `${lines[lines.length - 1]} else {`;
+    else lines.push(`${ind}${usesBraces ? 'else {' : 'else:'}`);
     node.elseBody.forEach((s) => lines.push(stmt(s, c, level + 1)));
     if (usesBraces) lines.push(`${ind}}`);
   }
@@ -189,10 +226,14 @@ function ifStmt(node: Extract<IRNode, { kind: 'If' }>, c: Ctx, level: number): s
 function repeatStmt(node: Extract<IRNode, { kind: 'Repeat' }>, c: Ctx, level: number): string {
   const ind = c.indentUnit.repeat(level);
   const lines: string[] = [];
-  if (c.lang === 'js' || c.lang === 'r') {
+  if (c.lang === 'js') {
     // Floor the count so a fractional value iterates the same as Python's
     // `range(int(n))` (a fractional `n` would otherwise run ceil iterations).
     lines.push(`${ind}for (let __i = 0; __i < Math.floor(${expr(node.count, c)}); __i++) {`);
+  } else if (c.lang === 'r') {
+    // R has no C-style `for`; it iterates over a sequence. `max(..., na.rm=TRUE)`
+    // mirrors the JS/Python behaviour of running zero times for a NaN/NA count.
+    lines.push(`${ind}for (__i in seq_len(max(0, floor(${expr(node.count, c)}), na.rm = TRUE))) {`);
   } else {
     lines.push(`${ind}for __i in range(int(${expr(node.count, c)})):`);
   }
@@ -214,8 +255,13 @@ function whileStmt(node: Extract<IRNode, { kind: 'While' }>, c: Ctx, level: numb
 function forEachStmt(node: Extract<IRNode, { kind: 'ForEach' }>, c: Ctx, level: number): string {
   const ind = c.indentUnit.repeat(level);
   const lines: string[] = [];
-  if (c.lang === 'js' || c.lang === 'r') {
-    lines.push(`${ind}for (const ${node.varName} of ${expr(node.iterable, c)}) {`);
+  if (c.lang === 'js') {
+    // `let`, not `const`: the interpreter re-binds the loop variable on every
+    // iteration, so a body that reassigns it must not become a TypeError.
+    lines.push(`${ind}for (let ${node.varName} of ${expr(node.iterable, c)}) {`);
+  } else if (c.lang === 'r') {
+    // R's `for … in …` is the direct analogue; there is no `of` keyword.
+    lines.push(`${ind}for (${node.varName} in ${expr(node.iterable, c)}) {`);
   } else {
     lines.push(`${ind}for ${node.varName} in ${expr(node.iterable, c)}:`);
   }
@@ -288,14 +334,22 @@ function stmt(node: IRNode, c: Ctx, level: number): string {
     case 'Break':
       return `${ind}break${terminator(c)}`;
     case 'Continue':
-      return `${ind}continue${terminator(c)}`;
+      // R's loop-control keywords are `break` / `next` — `continue` does not
+      // exist and would fail at run time as an undefined symbol.
+      return `${ind}${c.lang === 'r' ? 'next' : 'continue'}${terminator(c)}`;
     case 'FuncDef':
       return funcStmt(node, c, level);
     case 'Return':
       // A `return` at the top level is a syntax error in both JS and Python;
       // evaluate the value for its side effects instead.
       if (!c.inFunction) {
-        return node.value ? `${ind}${expr(node.value, c)}${terminator(c)}` : `${ind}${c.lang === 'js' ? ';' : 'pass'}`;
+        if (c.lang === 'js') return `${ind}${node.value ? expr(node.value, c) : ''};`;
+        // Python needs `pass` where R wants its null object.
+        return `${ind}${node.value ? expr(node.value, c) : c.lang === 'r' ? 'NULL' : 'pass'}`;
+      }
+      // R's `return` is a function, so `return x` is a syntax error there.
+      if (c.lang === 'r') {
+        return `${ind}return(${node.value ? expr(node.value, c) : 'NULL'})`;
       }
       return `${ind}return${node.value ? ` ${expr(node.value, c)}` : ''}${terminator(c)}`;
     case 'RawCode':

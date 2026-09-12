@@ -174,6 +174,12 @@ interface State {
   weightMass: number;
   showForces: boolean;
   running: boolean;
+  /**
+   * True once a structure config has been loaded. The plugin never fabricates
+   * a default truss — without data it stages an empty canvas and refuses to
+   * run, so the scene always comes from the user's file or a sample.
+   */
+  hasData: boolean;
 }
 
 const FLOOR_PAD = 26;
@@ -195,21 +201,29 @@ export class StructurePlugin implements Plugin {
     weightMass: 2,
     showForces: true,
     running: false,
+    hasData: false,
   };
   private joints: Joint[] = [];
   private members: Member[] = [];
   private weights: Weight[] = [];
   /**
-   * Initial configuration the sim re-arms to. Refreshed whenever the scene is
-   * (re)defined — seed, load, or a load-mass / weight change — so a parameter
-   * change always restarts from the authored layout, never from a
-   * half-collapsed one.
+   * The *authored* configuration the sim re-arms to: joints, members and loads
+   * exactly as seeded or loaded, never as deformed by a run. Captured only when
+   * the scene is (re)defined — see `snapshotInitial()`. A load-mass change
+   * updates the masses stored here; nothing else may mutate it.
    */
   private initial: { joints: Joint[]; members: Member[]; weights: Weight[] } = {
     joints: [],
     members: [],
     weights: [],
   };
+  /**
+   * Loads dropped at runtime with 增加重物, remembered at their authored
+   * placement. They belong to the *live* scene only, never to `initial`: a
+   * parameter change re-arms with them still standing, while 重置 clears them
+   * and returns to the pristine authored scene.
+   */
+  private extraWeights: Array<{ x: number; y: number; m: number }> = [];
   private rafId = 0;
   private lastFrame = 0;
   private acc = 0;
@@ -230,10 +244,13 @@ export class StructurePlugin implements Plugin {
   async activate(context: { container: ContainerCapabilities }) {
     this.ctx = context.container;
     this.canvas = context.container.canvas2d ?? null;
-    if (this.joints.length === 0) this.seedDemo();
+    // Data-driven: the plugin never fabricates a truss of its own. Opening it
+    // stages an empty bench with a "load data" hint — the scene appears only
+    // once a config has been dropped in or opened from 示例数据. Opening
+    // *paused* is a separate convention: even with data staged, the run starts
+    // only from ▶ 运行.
     this.report();
-    // A demonstration opens live: the authored load starts falling at once.
-    this.start();
+    this.draw();
   }
 
   async deactivate() {
@@ -243,11 +260,10 @@ export class StructurePlugin implements Plugin {
   async render(container: ContainerCapabilities) {
     this.ctx = container;
     this.canvas = container.canvas2d ?? null;
-    if (this.joints.length === 0) this.seedDemo();
     this.report();
     // render() is re-invoked on every viewport pan/zoom, so it must never
     // start a paused sim — it only keeps an already-live loop alive across a
-    // container remount.
+    // container remount. It must equally never fabricate a scene.
     this.draw();
     if (this.state.running) this.start();
   }
@@ -259,62 +275,11 @@ export class StructurePlugin implements Plugin {
   // ---- Scene setup -------------------------------------------------------
 
   /**
-   * A deck truss: the loaded deck on top (nodes 0-6, pinned to the abutments at
-   * either end) with the truss hanging underneath (bottom chord nodes 7-9).
-   * Every panel is triangulated, so the frame is statically determinate and
-   * stiff rather than cable-like.
+   * Commit the authored scene as the configuration the sim re-arms to. Call it
+   * only when the scene is *defined* (load) — never after a run has deformed
+   * it, and never after 增加重物, or the baseline would absorb the runtime loads
+   * and 重置 could no longer clear them.
    */
-  private seedDemo() {
-    const w = this.w();
-    const h = this.h();
-    const px = (u: number) => u * w;
-    const py = (v: number) => v * h;
-    const deckY = 0.5;
-    const bottomY = 0.86;
-    const deckX = [0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95];
-    const bottomX = [0.2, 0.5, 0.8];
-    const raw: Array<[number, number, boolean]> = [
-      ...deckX.map((x, i): [number, number, boolean] => [x, deckY, i === 0 || i === deckX.length - 1]),
-      ...bottomX.map((x): [number, number, boolean] => [x, bottomY, false]),
-    ];
-    this.joints = raw.map(([x, y, fixed]) => ({
-      x: px(x),
-      y: py(y),
-      vx: 0,
-      vy: 0,
-      m: JOINT_MASS,
-      fixed,
-    }));
-    this.members = [];
-    // Deck chord 0-1-2-3-4-5-6, bottom chord 7-8-9, verticals 1-7 / 3-8 / 5-9,
-    // and the zig-zag diagonals that triangulate every panel.
-    const link: Array<[number, number]> = [
-      [0, 1],
-      [1, 2],
-      [2, 3],
-      [3, 4],
-      [4, 5],
-      [5, 6],
-      [7, 8],
-      [8, 9],
-      [1, 7],
-      [3, 8],
-      [5, 9],
-      [0, 7],
-      [7, 2],
-      [2, 8],
-      [8, 4],
-      [4, 9],
-      [9, 6],
-    ];
-    for (const [a, b] of link) this.addMember(a, b, 'steel', 1);
-    this.weights = [this.makeWeight(px(0.5), py(0.16), this.state.weightMass)];
-    this.settleWeights();
-    this.failed = false;
-    this.snapshotInitial();
-  }
-
-  /** Commit the live scene as the configuration the sim re-arms to. */
   private snapshotInitial() {
     this.initial = {
       joints: this.joints.map((j) => ({ ...j, vx: 0, vy: 0 })),
@@ -324,15 +289,23 @@ export class StructurePlugin implements Plugin {
   }
 
   /**
-   * Re-arm the experiment: restore the initial configuration, drop the run loop
-   * and leave the scene paused so the user starts a clean run with ▶ 运行.
-   * Used after any *parameter* change.
+   * Re-arm the experiment: restore the authored configuration, drop the run
+   * loop and leave the scene paused so the user starts a clean run with ▶ 运行.
+   * `keepExtras` decides what happens to loads added at runtime — a parameter
+   * change re-arms with the deck still loaded, while 重置 clears them and
+   * returns to the pristine authored scene.
    */
-  private resetToInitial() {
+  private rearm(keepExtras: boolean) {
     const snap = this.initial;
     this.joints = snap.joints.map((j) => ({ ...j }));
     this.members = snap.members.map((m) => ({ ...m }));
     this.weights = snap.weights.map((w) => ({ ...w }));
+    if (keepExtras) {
+      for (const e of this.extraWeights) this.weights.push(this.makeWeight(e.x, e.y, e.m));
+    } else {
+      this.extraWeights = [];
+    }
+    this.settleWeights();
     this.failed = false;
     this.stop();
     this.report();
@@ -377,25 +350,6 @@ export class StructurePlugin implements Plugin {
     }
   }
 
-  private addMember(a: number, b: number, matId: MaterialId, kMul: number): number {
-    const A = this.joints[a];
-    const B = this.joints[b];
-    if (!A || !B || a === b) return -1;
-    const L0 = Math.hypot(B.x - A.x, B.y - A.y);
-    if (L0 < 8) return -1;
-    this.members.push({
-      a,
-      b,
-      L0,
-      kMul,
-      mat: matId,
-      force: 0,
-      overload: 0,
-      broken: false,
-    });
-    return this.members.length - 1;
-  }
-
   /** Axial stiffness of a member, normalized for the current canvas. */
   private stiffness(mem: Member, s: number): number {
     return MATERIALS[mem.mat].E * mem.kMul * s;
@@ -434,15 +388,24 @@ export class StructurePlugin implements Plugin {
 
     const act = (key: string) => (params[key] as { action?: string } | undefined)?.action;
 
-    // 重置 — back to the authored configuration (seeded or loaded), paused.
+    // 重置 — back to the pristine authored scene: the frame re-forms and any
+    // weights added at runtime are cleared, then the lab waits for ▶ 运行.
     if (act('reset') === 'reset') {
-      this.resetToInitial();
+      if (!s.hasData) {
+        this.warnNoData();
+        return;
+      }
+      this.rearm(false);
       return;
     }
 
     // 增加重物 — rest another weight on the deck at the emptiest panel and
     // carry on running, so the extra sag (or the collapse) is immediate.
     if (act('drop') === 'drop') {
+      if (!s.hasData) {
+        this.warnNoData();
+        return;
+      }
       const spots = [0.35, 0.65, 0.5, 0.2, 0.8];
       let bestX = this.w() * 0.5;
       let bestGap = -1;
@@ -456,9 +419,12 @@ export class StructurePlugin implements Plugin {
           bestX = x;
         }
       }
-      this.weights.push(this.makeWeight(bestX, this.h() * 0.5, s.weightMass));
+      const wt = this.makeWeight(bestX, this.h() * 0.5, s.weightMass);
+      this.weights.push(wt);
+      // Remember the load so a later parameter change re-arms with it, but do
+      // *not* fold it into `initial`: 重置 must still be able to clear it.
+      this.extraWeights.push({ x: wt.x, y: wt.y, m: wt.m });
       this.settleWeights();
-      this.snapshotInitial();
       this.report();
       this.start();
       this.draw();
@@ -480,20 +446,22 @@ export class StructurePlugin implements Plugin {
     if (typeof params.weightMass === 'number') {
       const m = clamp(params.weightMass, 0.2, 10);
       s.weightMass = m;
-      for (const wt of this.weights) {
+      // The load-mass slider rescales every weight, authored and added alike.
+      // Update the authored baseline (and the remembered extras) so both the
+      // re-arm below and a later 重置 pick up the new mass; rearm() re-seats
+      // the larger spheres on the deck.
+      for (const wt of this.initial.weights) {
         wt.m = m;
         wt.r = 8 + 3 * Math.sqrt(m);
       }
-      // A bigger weight is also a bigger sphere, so re-seat it on the deck —
-      // otherwise it starts embedded in the member and fires the truss.
-      this.settleWeights();
+      for (const e of this.extraWeights) e.m = m;
       rearm = true;
     }
     if (typeof params.showForces === 'boolean') s.showForces = params.showForces;
 
     if (rearm) {
-      this.snapshotInitial();
-      this.resetToInitial();
+      // A parameter change re-arms with the runtime loads still standing.
+      this.rearm(true);
       return;
     }
     this.draw();
@@ -570,8 +538,8 @@ export class StructurePlugin implements Plugin {
         type: 'button',
         action: 'reset',
         hint: zh
-          ? '恢复为初始 / 加载时的构型，并暂停'
-          : 'Restore the initial (or loaded) configuration, paused',
+          ? '清空后加的重物，结构恢复为初始 / 加载时的构型，并暂停'
+          : 'Clears the weights added at runtime and restores the initial (or loaded) configuration, paused',
       },
     ];
   }
@@ -658,6 +626,10 @@ export class StructurePlugin implements Plugin {
         weights.push(this.makeWeight(x * w, y * h, m));
       }
     }
+    // Loading halts a run in progress: the new structure is staged paused and
+    // waits for an explicit ▶ 运行, so the user sees the authored shape before
+    // it deforms.
+    if (this.state.running) this.stop();
     this.joints = joints;
     this.members = members;
     this.weights = weights;
@@ -665,16 +637,22 @@ export class StructurePlugin implements Plugin {
     this.failed = false;
     if (Number.isFinite(Number(obj.gravity))) this.state.gravity = clamp(Number(obj.gravity), 0, 1600);
     if (Number.isFinite(Number(obj.damping))) this.state.damping = clamp(Number(obj.damping), 0, 4);
+    this.state.hasData = true;
+    this.extraWeights = [];
     this.snapshotInitial();
     this.report();
     this.refreshParams();
-    // A loaded scene runs immediately, like the seeded demo.
-    this.start();
+    this.draw();
   }
 
   // ---- Simulation --------------------------------------------------------
 
   private start() {
+    if (!this.state.hasData || this.joints.length === 0) {
+      // Data-driven: without a loaded structure there is nothing to simulate.
+      this.warnNoData();
+      return;
+    }
     // Guard on the *loop*, not on `running`: gating on `running` made the very
     // first ▶ 运行 after a pause a no-op (stop() had just cleared the flag), so
     // the sim could never be resumed.
@@ -991,6 +969,16 @@ export class StructurePlugin implements Plugin {
     return this.api?.locale === 'zh-CN';
   }
 
+  /** The one "there is nothing to simulate yet" message, shared by every entry. */
+  private warnNoData() {
+    this.api.notify(
+      'warning',
+      this.zh()
+        ? '尚未加载结构数据 — 拖入 JSON 结构文件或打开「示例数据」'
+        : 'No structure loaded — drop a JSON structure file or open sample data',
+    );
+  }
+
   private report() {
     this.api.reportDataScale(this.joints.length + this.members.length + this.weights.length);
   }
@@ -1024,6 +1012,22 @@ export class StructurePlugin implements Plugin {
 
     g.fillStyle = getComputedStyle(canvas).backgroundColor || '#0a0e13';
     g.fillRect(0, 0, w, h);
+
+    if (!this.state.hasData) {
+      // Empty state: no structure loaded — never render a fabricated truss.
+      g.fillStyle = 'rgba(150, 165, 185, 0.85)';
+      g.font = `${this.zh() ? '12px "Microsoft YaHei"' : '12px Consolas'}, monospace`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(
+        this.zh()
+          ? '未加载数据 — 拖入 JSON 结构文件或打开「示例数据」'
+          : 'No data — drop a JSON structure file or open sample data',
+        w / 2,
+        h / 2,
+      );
+      return;
+    }
 
     // Floor.
     const floor = h - FLOOR_PAD;
@@ -1133,8 +1137,8 @@ export class StructurePlugin implements Plugin {
     g.textBaseline = 'alphabetic';
     g.fillText(
       this.zh()
-        ? '点击「▶ 运行」加载结构；调整参数会自动归位并暂停'
-        : 'Press ▶ Run to load the structure; changing a parameter re-arms and pauses',
+        ? '点击「▶ 运行」开始模拟；调整参数会自动归位并暂停'
+        : 'Press ▶ Run to start; changing a parameter re-arms and pauses',
       12,
       20,
     );

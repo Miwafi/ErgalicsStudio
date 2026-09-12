@@ -28,6 +28,16 @@ import {
 let pyodide: PyodideInterface | null = null;
 let ready = false;
 
+/** In-flight bootstrap, so concurrent init/run/repl share one `loadPyodide`. */
+let bootstrap: Promise<PyodideInterface> | null = null;
+/**
+ * The indexURL the interpreter was (or is being) booted from. `init` owns it;
+ * `run`/`repl` read it instead of hardcoding the CDN, otherwise a run that
+ * races ahead of `init` would silently load Pyodide from the public CDN and
+ * break offline/self-hosted setups.
+ */
+let activeIndexURL: string = PYODIDE_INDEX_URL;
+
 // ---- host-facing side effects -------------------------------------------
 
 function postPlot(payload: PlotPayload): void {
@@ -45,19 +55,37 @@ function postNotify(kind: NotifyKind, message: string): void {
 
 // ---- interpreter bootstrap ----------------------------------------------
 
-async function ensurePyodide(indexURL: string): Promise<PyodideInterface> {
-  if (pyodide && ready) return pyodide;
-  // Dynamic import of an absolute URL: Vite leaves it untouched (@vite-ignore).
-  const mod = (await import(/* @vite-ignore */ `${indexURL}pyodide.mjs`)) as {
-    loadPyodide: (opts: { indexURL: string }) => Promise<PyodideInterface>;
-  };
-  const instance = await mod.loadPyodide({ indexURL });
-  pyodide = instance;
-  return instance;
+function ensurePyodide(indexURL: string): Promise<PyodideInterface> {
+  if (pyodide && ready) return Promise.resolve(pyodide);
+  // Memoize the *pending* load too: without this, an `init` and a `run` racing
+  // each other started two `loadPyodide` calls and downloaded the WASM twice.
+  if (bootstrap) return bootstrap;
+  activeIndexURL = indexURL;
+  const load = (async () => {
+    // Dynamic import of an absolute URL: Vite leaves it untouched (@vite-ignore).
+    const mod = (await import(/* @vite-ignore */ `${indexURL}pyodide.mjs`)) as {
+      loadPyodide: (opts: { indexURL: string }) => Promise<PyodideInterface>;
+    };
+    const instance = await mod.loadPyodide({ indexURL });
+    pyodide = instance;
+    return instance;
+  })();
+  bootstrap = load;
+  // A rejected bootstrap must not be cached, or every later attempt replays the
+  // same failure without ever retrying the (transient) network load.
+  void load.catch(() => {
+    if (bootstrap === load) bootstrap = null;
+  });
+  return load;
 }
 
 /** Boot the interpreter: load packages, register the bridge, inject `studio`. */
 async function init(indexURL: string, loadPackages: string[]): Promise<void> {
+  if (bootstrap && activeIndexURL !== indexURL) {
+    // A run/repl got here first and started booting from the default URL; make
+    // the mismatch visible instead of silently ignoring the configured one.
+    postNotify('warning', `Pyodide already loading from ${activeIndexURL}; ignoring indexURL ${indexURL}`);
+  }
   const py = await ensurePyodide(indexURL);
   await py.loadPackage(loadPackages);
 
@@ -92,9 +120,11 @@ function snapshotVariables(py: PyodideInterface): Record<string, VariableSnapsho
 }
 
 async function handleRun(msg: RunMessage): Promise<void> {
-  const py = await ensurePyodide(PYODIDE_INDEX_URL);
   const started = performance.now();
   try {
+    // Inside the try: a failed bootstrap (CDN blocked, offline) must still
+    // report back, otherwise the host waits forever for a result.
+    const py = await ensurePyodide(activeIndexURL);
     // Ship data files + params into the interpreter before running so the
     // synchronous studio.load() resolves without an async host round-trip.
     // toPy converts the JS objects into real Python dicts — a raw JsProxy
@@ -125,8 +155,9 @@ async function handleRun(msg: RunMessage): Promise<void> {
 }
 
 async function handleRepl(msg: ReplMessage): Promise<void> {
-  const py = await ensurePyodide(PYODIDE_INDEX_URL);
   try {
+    // See handleRun: bootstrap failures must surface as a repl result too.
+    const py = await ensurePyodide(activeIndexURL);
     py.globals.set('_REPL_CODE', msg.code);
     const text = String(py.runPython('_repl(_REPL_CODE)') ?? '');
     postMessage({ type: 'repl-result', id: msg.id, ok: true, text });
@@ -141,7 +172,11 @@ async function handleRepl(msg: ReplMessage): Promise<void> {
 self.addEventListener('message', (ev: MessageEvent<WorkerRequest>) => {
   const msg = ev.data;
   if (msg.type === 'init') {
-    void init(msg.indexURL ?? PYODIDE_INDEX_URL, msg.loadPackages ?? PYODIDE_LOAD_PACKAGES);
+    // A bare `void` here turned any bootstrap failure into a silent unhandled
+    // rejection — the host then sat on "starting Python" forever.
+    init(msg.indexURL ?? PYODIDE_INDEX_URL, msg.loadPackages ?? PYODIDE_LOAD_PACKAGES).catch((err: unknown) => {
+      postNotify('error', `Pyodide failed to start: ${err instanceof Error ? err.message : String(err)}`);
+    });
   } else if (msg.type === 'run') {
     void handleRun(msg);
   } else if (msg.type === 'repl') {

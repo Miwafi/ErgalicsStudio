@@ -14,10 +14,21 @@ export interface CorrectionResult {
   significant: boolean[];
 }
 
+/**
+ * Clamp a raw p-value into [0, 1]. NaN/Infinity become 1 (never significant)
+ * rather than poisoning every adjusted value downstream.
+ */
+function sanitizeP(p: number): number {
+  if (!Number.isFinite(p)) return 1;
+  if (p < 0) return 0;
+  if (p > 1) return 1;
+  return p;
+}
+
 /** Bonferroni: multiply each p by the number of tests (capped at 1). */
 export function bonferroni(pvals: number[], alpha = 0.05): CorrectionResult {
   const m = pvals.length;
-  const adjusted = pvals.map((p) => Math.min(1, p * m));
+  const adjusted = pvals.map((p) => Math.min(1, sanitizeP(p) * m));
   return { adjusted, significant: adjusted.map((a) => a <= alpha) };
 }
 
@@ -28,12 +39,15 @@ export function bonferroni(pvals: number[], alpha = 0.05): CorrectionResult {
  */
 export function benjaminiHochberg(pvals: number[], alpha = 0.05): CorrectionResult {
   const m = pvals.length;
-  const order = [...pvals.keys()].sort((a, b) => pvals[a]! - pvals[b]!);
+  // Sanitize first: NaN would otherwise make the sort comparator inconsistent
+  // and propagate NaN through every q-value it touches.
+  const p = pvals.map(sanitizeP);
+  const order = [...p.keys()].sort((a, b) => p[a]! - p[b]!);
   const q = new Array<number>(m).fill(0);
   let prev = 0;
   for (let k = 0; k < m; k += 1) {
     const i = order[k]!;
-    const val = (pvals[i]! * m) / (k + 1);
+    const val = (p[i]! * m) / (k + 1);
     const qq = Math.max(val, prev);
     q[i] = qq;
     prev = qq;

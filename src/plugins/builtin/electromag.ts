@@ -120,8 +120,10 @@ export class ElectromagPlugin implements Plugin {
     this.ctx = context.container;
     this.canvas = context.container.canvas2d ?? null;
     this.bindCanvas();
-    this.seedDemo();
-    // Opens paused — the user presses ▶ 运行 explicitly (lab convention).
+    // Data-driven: the lab never fabricates an "atom" of its own. Opening it
+    // stages an empty bench — charges arrive from a dropped config, from
+    // 示例数据, or from the user clicking them in. It opens *paused* on top of
+    // that: even a loaded scene runs only from ▶ 运行.
     this.draw();
   }
 
@@ -133,43 +135,11 @@ export class ElectromagPlugin implements Plugin {
     this.ctx = container;
     this.canvas = container.canvas2d ?? null;
     this.bindCanvas();
-    if (this.charges.length === 0) this.seedDemo();
     // render() is also re-invoked on every viewport pan/zoom, so it must never
-    // start a paused sim — only keep an already-live loop alive.
+    // start a paused sim — only keep an already-live loop alive. It must
+    // equally never fabricate a scene.
     this.draw();
     if (this.state.running) this.start();
-  }
-
-  private seedDemo() {
-    const canvas = this.ctx?.canvas2d;
-    const w = canvas?.clientWidth || 600;
-    const h = canvas?.clientHeight || 400;
-    // A small "atom": a heavy positive nucleus with light negative charges in
-    // circular orbits. Coulomb supplies the centripetal pull, so pressing
-    // ▶ 运行 immediately shows the charges interacting — and the default B
-    // field visibly precesses the orbits, so neither physics ingredient looks
-    // like it is missing.
-    const cx = w * 0.5;
-    const cy = h * 0.5;
-    const R = Math.min(w, h) * 0.27;
-    const Q = 7; // nucleus charge (= its mass, so it barely drifts)
-    const q = -1.2;
-    const m = Math.max(0.3, Math.abs(q));
-    // v for a circular orbit: m v²/R = K Q |q| / R².
-    const v = Math.sqrt((K * Q * Math.abs(q)) / (m * R));
-    this.charges = [{ x: cx, y: cy, vx: 0, vy: 0, q: Q }];
-    for (let k = 0; k < 3; k += 1) {
-      const a = (k / 3) * Math.PI * 2;
-      this.charges.push({
-        x: cx + Math.cos(a) * R,
-        y: cy + Math.sin(a) * R,
-        vx: -Math.sin(a) * v,
-        vy: Math.cos(a) * v,
-        q,
-      });
-    }
-    this.trails = this.charges.map(() => []);
-    this.snapshotInitial();
   }
 
   /** Commit the live charges as the configuration the sim re-arms to. */
@@ -464,6 +434,17 @@ export class ElectromagPlugin implements Plugin {
   }
 
   private start() {
+    if (this.charges.length === 0) {
+      // Data-driven: the lab never fabricates charges, so there is nothing to
+      // simulate until a config is loaded or charges are placed by hand.
+      this.api.notify(
+        'warning',
+        this.api.locale === 'zh-CN'
+          ? '尚未放置电荷 — 拖入 JSON 配置、打开「示例数据」，或在画布上点击放置'
+          : 'No charges yet — drop a JSON config, open sample data, or click the canvas to place one',
+      );
+      return;
+    }
     // Guard on the *loop*, not on `running`: gating on `running` made the very
     // first ▶ 运行 after a pause a no-op (stop() had just cleared the flag), so
     // the sim could never be resumed.
@@ -594,6 +575,23 @@ export class ElectromagPlugin implements Plugin {
 
     if (this.state.showField && Math.abs(this.state.B) > 0.001) {
       this.drawField(g, w, h);
+    }
+
+    if (this.charges.length === 0) {
+      // Empty state: no charges loaded or placed — never render a fabricated
+      // scene. The B-field arrows stay up so the lab still reads as live.
+      g.fillStyle = 'rgba(150, 165, 185, 0.85)';
+      g.font = `${this.api.locale === 'zh-CN' ? '12px "Microsoft YaHei"' : '12px Consolas'}, monospace`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(
+        this.api.locale === 'zh-CN'
+          ? '未加载数据 — 拖入 JSON 电荷配置或打开「示例数据」（也可在画布上点击放置电荷）'
+          : 'No data — drop a JSON charge config or open sample data (or click the canvas to place a charge)',
+        w / 2,
+        h / 2,
+      );
+      return;
     }
 
     for (let i = 0; i < this.charges.length; i += 1) {

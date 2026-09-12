@@ -69,7 +69,9 @@ function emitBlock(node: ExportNode, ins: string[], varName: string): string {
     case 'statistics.mannWhitney':
       return `# Mann-Whitney U test\n${varName} = scipy.stats.mannwhitneyu(${ins[0]}['${c('xColumn')}'], ${ins[1]}['${c('yColumn')}'])`;
     case 'statistics.chiSquare':
-      return `# chi-square test of independence\n${varName} = scipy.stats.chi2_contingency(${ins[0]})`;
+      // The studio kernel does *not* apply Yates' continuity correction, so the
+      // script must opt out of scipy's default (correction=True) to match.
+      return `# chi-square test of independence\n${varName} = scipy.stats.chi2_contingency(${ins[0]}, correction=False)`;
     case 'statistics.correlation':
       return `# correlation (${c('method') || 'pearson'})\n${varName} = ${c('method') === 'spearman' ? 'scipy.stats.spearmanr' : 'np.corrcoef'}(${ins[0]}['${c('xColumn')}'], ${ins[1]}['${c('yColumn')}'])`;
     case 'statistics.cohensD':
@@ -110,7 +112,12 @@ export function dagToPython(graph: ExportGraph): string {
     '    return float(np.sqrt(((na - 1) * np.var(a, ddof=1) + (nb - 1) * np.var(b, ddof=1)) / (na + nb - 2)))',
     'def _correct(pvals, method="bonferroni", alpha=0.05):',
     '    import statsmodels.stats.multitest as sm',
-    '    return sm.multipletests(pvals, alpha=alpha, method=method)',
+    '    # The studio block uses "bh"; statsmodels spells it "fdr_bh". Passing "bh"',
+    '    # straight through raises ValueError.',
+    '    _m = {"bh": "fdr_bh", "fdr_bh": "fdr_bh", "bonferroni": "bonferroni"}.get(method, method)',
+    '    # multipletests returns (reject, pvals_corrected, ...); the kernel exposes',
+    '    # only the adjusted p-values, so return that array to keep them aligned.',
+    '    return sm.multipletests(list(pvals), alpha=alpha, method=_m)[1]',
     '',
     '# --- data sources (reconstruct from the run manifest inputs) ---',
   ]

@@ -93,8 +93,14 @@ export function dataTableToHistogram(
   if (n === 0) {
     return { width: 640, height: 420, title: opts.title, xLabel: opts.xLabel ?? col, yLabel: opts.yLabel ?? 'count', series: [] };
   }
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
+  // Reduce instead of `Math.min(...vals)`: spreading a large sample exceeds the
+  // call-stack limit (RangeError at roughly 125k elements).
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of vals) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
   const bins = opts.bins && opts.bins > 0 ? opts.bins : Math.max(1, Math.ceil(Math.log2(n)) + 1);
   const span = max - min || 1;
   const w = span / bins;

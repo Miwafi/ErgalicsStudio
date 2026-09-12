@@ -146,6 +146,7 @@ function Control({
       return (
         <button
           type="button"
+          data-param-key={def.key}
           className={`btn btn-block ${def.value ? 'btn-toggle-on' : 'btn-primary'}`}
           onClick={() => emit(!def.value)}
         >

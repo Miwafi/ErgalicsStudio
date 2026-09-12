@@ -6,6 +6,7 @@
 // geometry.ts; interaction is delegated up to BlockCanvas via callbacks.
 // ==========================================================================
 
+import { memo } from 'react';
 import type { BlockInstance, BlockMeta } from '@/types/block';
 import type { NodeStatus } from '@/stores/blockStore';
 import { useLocale } from '@/i18n';
@@ -53,7 +54,7 @@ function portTop(index: number, paramRows: number): number {
   );
 }
 
-export function BlockNode(props: BlockNodeProps) {
+export function BlockNodeImpl(props: BlockNodeProps) {
   const { instance, meta, selected, status, screenPos, height } = props;
   const { locale } = useLocale();
   const paramEntries = Object.entries(instance.params).slice(0, MAX_PARAM_ROWS);
@@ -113,3 +114,24 @@ export function BlockNode(props: BlockNodeProps) {
     </div>
   );
 }
+
+/**
+ * Memoized with a custom comparator: the canvas hands every node a freshly
+ * allocated `screenPos` object on each render, so the default shallow compare
+ * would never skip anything. During a node drag (or a status flip) all other
+ * nodes keep identical positions, and skipping them is what keeps a large
+ * graph from re-rendering on every pointermove.
+ */
+export const BlockNode = memo(
+  BlockNodeImpl,
+  (a, b) =>
+    a.instance === b.instance &&
+    a.meta === b.meta &&
+    a.selected === b.selected &&
+    a.status === b.status &&
+    a.height === b.height &&
+    a.screenPos.x === b.screenPos.x &&
+    a.screenPos.y === b.screenPos.y &&
+    a.onNodePointerDown === b.onNodePointerDown &&
+    a.onPortPointerDown === b.onPortPointerDown,
+);

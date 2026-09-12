@@ -289,15 +289,34 @@ function columnTypeOf(data: ColumnData): ColumnType {
 }
 
 /** Extract column `j` (stride `cols`) from a flattened row-major buffer. */
+type NumericTypedArray = Float64Array | Float32Array | Int32Array | Uint32Array;
+
+/**
+ * Extract column `j` from a row-major flattened numeric buffer.
+ *
+ * Single strided pass into a preallocated array. The previous
+ * `data.filter((_, i) => i % cols === j)` rescanned the *entire* buffer for
+ * every column, so flattening an R×C dataset cost O(R·C²) — a 2000×2000 grid
+ * meant 8e9 predicate calls.
+ */
+function stridedColumn(src: NumericTypedArray, j: number, cols: number): NumericTypedArray {
+  const len = src.length;
+  const count = j < len ? Math.ceil((len - j) / cols) : 0;
+  const Ctor = src.constructor as new (n: number) => NumericTypedArray;
+  const out = new Ctor(count);
+  for (let r = 0; r < count; r += 1) out[r] = src[j + r * cols]!;
+  return out;
+}
+
 function makeColumn(
   data: ColumnData,
   j: number,
   cols: number,
 ): ColumnData {
-  if (data instanceof Float64Array) return data.filter((_, i) => i % cols === j);
-  if (data instanceof Float32Array) return data.filter((_, i) => i % cols === j);
-  if (data instanceof Int32Array) return data.filter((_, i) => i % cols === j);
-  if (data instanceof Uint32Array) return data.filter((_, i) => i % cols === j);
+  if (data instanceof Float64Array) return stridedColumn(data, j, cols);
+  if (data instanceof Float32Array) return stridedColumn(data, j, cols);
+  if (data instanceof Int32Array) return stridedColumn(data, j, cols);
+  if (data instanceof Uint32Array) return stridedColumn(data, j, cols);
   // Unreachable: datasetToTable throws before calling makeColumn for
   // non-numeric data.
   throw new Error('only numeric datasets can be flattened to a table');

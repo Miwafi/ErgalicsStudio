@@ -45,6 +45,15 @@ export interface RawVariable {
 /** Normalize any numeric buffer to float64. */
 export function asFloat64(data: NumericArray | number[]): Float64Array {
   if (data instanceof Float64Array) return data;
+  // `Float64Array.from` runs ToNumber on every element, which throws for BigInt
+  // elements ("Cannot convert a BigInt value to a number"). HDF5 int64/uint64
+  // datasets (ubiquitous in h5ad/AnnData) land here, so convert explicitly.
+  // Note: values beyond 2^53 lose precision, same as any float64 round-trip.
+  if (data instanceof BigInt64Array || data instanceof BigUint64Array) {
+    const out = new Float64Array(data.length);
+    for (let i = 0; i < data.length; i += 1) out[i] = Number(data[i]);
+    return out;
+  }
   return Float64Array.from(data as ArrayLike<number>);
 }
 

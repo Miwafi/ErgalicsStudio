@@ -1,4 +1,4 @@
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { lazy, Suspense } from 'react';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { BannerStack, ToastStack } from '@/components/Feedback';
@@ -13,19 +13,25 @@ const ShareLinkPage = lazy(() => import('@/pages/share/ShareLinkPage'));
 initProjectStore();
 
 function AppShell() {
+  const location = useLocation();
   return (
     <>
       <BannerStack />
       <ToastStack />
       <Suspense fallback={<div className="route-loading"><span className="spinner" /></div>}>
-        <Routes>
-          <Route path="/" element={<WelcomePage />} />
-          <Route path="/workbench" element={<WorkbenchPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/plugin/:pluginId" element={<PluginViewPage />} />
-          <Route path="/share/:payload" element={<ShareLinkPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        {/* Keyed by pathname so each navigation remounts the stage and replays
+            the `.route-stage` fade/settle entrance. `location` is passed through
+            so the matched route matches the keyed stage exactly. */}
+        <div key={location.pathname} className="route-stage">
+          <Routes location={location}>
+            <Route path="/" element={<WelcomePage />} />
+            <Route path="/workbench" element={<WorkbenchPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/plugin/:pluginId" element={<PluginViewPage />} />
+            <Route path="/share/:payload" element={<ShareLinkPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
       </Suspense>
     </>
   );

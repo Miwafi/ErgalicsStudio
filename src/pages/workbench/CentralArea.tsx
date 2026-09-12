@@ -223,7 +223,7 @@ export function CentralArea() {
           }
         }
         if (loaded.length === 0) {
-          notify('warning', '文件中没有可预览为表格的数值变量');
+          notify('warning', t('io.no_numeric_variables'));
           return;
         }
         for (const { raw, table } of loaded) {
@@ -231,7 +231,7 @@ export function CentralArea() {
             .getState()
             .addDataFile(new File([dataTableToCSV(table)], `${sanitizeName(raw.name)}.csv`, { type: 'text/csv' }));
         }
-        notify('success', `已导入 ${loaded.length} 个科学数据变量（共 ${datasets.length} 个）`);
+        notify('success', t('io.import_scientific_ok', { count: loaded.length, total: datasets.length }));
         // Re-route the first variable's CSV through the normal plugin pipeline.
         const first = loaded[0]!;
         await routeFile(
@@ -239,7 +239,7 @@ export function CentralArea() {
         );
       } catch (err) {
         logger.error('io', 'scientific load failed', err);
-        notify('error', '科学数据解析失败，请确认文件格式是否正确');
+        notify('error', t('io.parse_failed'));
       }
       return;
     }

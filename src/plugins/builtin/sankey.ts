@@ -183,7 +183,10 @@ export class SankeyPlugin implements Plugin {
     const canvas = this.ctx?.canvas2d;
     const w = canvas?.clientWidth ?? 400;
     const h = canvas?.clientHeight ?? 300;
-    const maxLevel = Math.max(...this.nodes.map((n) => n.level), 0);
+    // Reduce instead of spreading: a wide graph could otherwise hit the
+    // call-stack limit on `Math.max(...nodes)`.
+    let maxLevel = 0;
+    for (const n of this.nodes) if (n.level > maxLevel) maxLevel = n.level;
     const colW = maxLevel > 0 ? (w - 40) / maxLevel : w - 40;
     const margin = 20;
 

@@ -29,7 +29,7 @@ export default function SettingsPage() {
     await clearCache();
     setUsage(await storageUsage());
     setClearOpen(false);
-    notify('success', t('settings.cache_usage'));
+    notify('success', t('settings.cache_cleared'));
   };
 
   const gpu = getGpuBackend();

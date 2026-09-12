@@ -6,6 +6,7 @@ import { useProjectStore } from '@/stores/projectStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useAppStore } from '@/stores/appStore';
 import { PluginDialog } from '../plugin-dialog/PluginDialog';
+import { Modal } from '@/components/Modal';
 import { PLUGIN_DISCIPLINES, disciplineOf } from '@/plugins/categories';
 import type { PluginRegistryEntry } from '@/types/plugin';
 
@@ -171,33 +172,38 @@ export function Sidebar() {
         }}
       />
 
-      {newOpen && (
-        <div className="modal-overlay" onMouseDown={() => setNewOpen(false)}>
-          <div className="modal modal-sm" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="modal-body">
-              <label className="field-label" htmlFor="new-project-name">
-                {t('project.prompt_name')}
-              </label>
-              <input
-                id="new-project-name"
-                className="input"
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && void handleNewProject()}
-              />
-            </div>
-            <div className="modal-footer">
-              <button type="button" className="btn" onClick={() => setNewOpen(false)}>
-                {t('common.cancel')}
-              </button>
-              <button type="button" className="btn btn-primary" onClick={() => void handleNewProject()}>
-                {t('common.confirm')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Reuse <Modal> instead of a hand-rolled overlay: it brings ESC-to-close,
+          role="dialog"/aria-modal, a focus trap with focus restore and the
+          (ref-counted) background scroll lock. The bespoke version had none of
+          them, so keyboard users could not dismiss this dialog at all. */}
+      <Modal
+        open={newOpen}
+        title={t('project.new')}
+        onClose={() => setNewOpen(false)}
+        width={420}
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setNewOpen(false)}>
+              {t('common.cancel')}
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => void handleNewProject()}>
+              {t('common.confirm')}
+            </button>
+          </>
+        }
+      >
+        <label className="field-label" htmlFor="new-project-name">
+          {t('project.prompt_name')}
+        </label>
+        <input
+          id="new-project-name"
+          className="input"
+          autoFocus
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void handleNewProject()}
+        />
+      </Modal>
 
       <PluginDialog open={pluginOpen} onClose={() => setPluginOpen(false)} />
     </aside>

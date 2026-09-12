@@ -223,7 +223,9 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  /* Theme-aware sweep highlight: a fixed white sheen was invisible on the
+     light theme's pale hero background. */
+  background: linear-gradient(90deg, transparent, var(--color-accent-soft), transparent);
   transform: translateX(-100%);
   animation: signal-sweep 2.6s ease-in-out infinite;
 }
@@ -1086,7 +1088,8 @@
 .plugin-card:hover,
 .plugin-card.active {
   border-color: var(--color-accent);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--shadow-2);
+  transform: translateY(-2px);
 }
 
 .plugin-card-main {
@@ -1172,18 +1175,18 @@
 }
 
 .cat-scientific {
-  background: rgba(34, 211, 238, 0.16);
-  color: #22d3ee;
+  background: var(--cat-scientific-soft);
+  color: var(--cat-scientific);
 }
 
 .cat-fun {
-  background: rgba(244, 114, 182, 0.16);
-  color: #f472b6;
+  background: var(--cat-fun-soft);
+  color: var(--cat-fun);
 }
 
 .cat-utility {
-  background: rgba(167, 139, 250, 0.16);
-  color: #a78bfa;
+  background: var(--cat-utility-soft);
+  color: var(--cat-utility);
 }
 
 .example-data-subtitle {
@@ -1596,6 +1599,166 @@
 }
 
 /* ==========================================================================
+   Guided tour (新手引导)
+   ========================================================================== */
+
+/* The whole layer ignores pointer events so the real UI under the spotlight
+   stays clickable — only the tooltip card captures clicks. Sits above the
+   modal (2000) so it can spotlight elements inside open dialogs. */
+.tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  pointer-events: none;
+}
+
+/* Spotlight: a rounded rect around the target; the huge box-shadow paints
+   the dimmed backdrop over everything else. */
+.tour-spot {
+  position: fixed;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 9999px var(--color-bg-overlay);
+  outline: 2px solid var(--color-accent);
+  transition: top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease;
+}
+
+/* Pulsing ring that draws the eye to the highlighted element. It fades only —
+   never scales: a transform scale(1.1) on a viewport-sized box (sidebar,
+   top bar) throws the ring far outside the window. */
+.tour-spot::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border: 2px solid var(--color-accent);
+  border-radius: calc(var(--radius-md) + 5px);
+  animation: tour-pulse 1.6s ease-out infinite;
+}
+
+@keyframes tour-pulse {
+  0% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.tour-tip {
+  position: fixed;
+  pointer-events: auto;
+  padding: var(--space-4);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  animation: tour-tip-in 0.2s ease;
+}
+
+@keyframes tour-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Centered variant for steps without a target (welcome / done). Uses the
+   standalone `translate` property — the tour-tip-in animation animates
+   `transform`, which would otherwise override the centering transform and
+   flash the card off-center for its 0.2s duration. */
+.tour-tip-center {
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+}
+
+.tour-tip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.tour-tip-title {
+  font-weight: 600;
+  font-size: var(--font-size-md);
+  color: var(--color-text-primary);
+}
+
+.tour-tip-count {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 18px;
+}
+
+.tour-tip-body {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.55;
+}
+
+.tour-tip-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+  font-size: var(--font-size-xs);
+}
+
+.tour-tip-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* Full-screen dim behind target-less (welcome / done) steps so the centered
+   hero card stands out from the workbench instead of blending into it. */
+.tour-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg-overlay);
+  animation: tour-fade 0.25s ease;
+}
+
+@keyframes tour-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Hero variant for welcome / done: wider, accent-edged, with a soft glow. */
+.tour-tip-hero {
+  width: min(460px, calc(100vw - 48px));
+  padding: var(--space-5);
+  border-top: 3px solid var(--color-accent);
+  box-shadow: var(--shadow-3), 0 0 48px var(--color-accent-soft);
+}
+
+.tour-tip-hero .tour-tip-title {
+  font-size: var(--font-size-lg);
+}
+
+.tour-tip-hero .tour-tip-body {
+  font-size: var(--font-size-md);
+}
+
+/* ==========================================================================
    Misc
    ========================================================================== */
 
@@ -1756,6 +1919,16 @@
 }
 
 @media (max-width: 720px) {
+  /* The topbar packs mode switch + file ops + settings + share + language +
+     theme in one row; with a fixed height and .workbench's overflow:hidden
+     the trailing buttons were simply cut off on a phone. Let it wrap. */
+  .topbar {
+    height: auto;
+    min-height: var(--topbar-height);
+    flex-wrap: wrap;
+    padding: var(--space-1) var(--space-2);
+    row-gap: var(--space-1);
+  }
   .sidebar {
     position: absolute;
     left: 0;
