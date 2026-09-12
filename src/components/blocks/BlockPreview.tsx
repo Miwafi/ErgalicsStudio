@@ -89,7 +89,10 @@ export function BlockPreview() {
     svgHostRef.current.innerHTML = svgPayload.markup;
   }, [isSvgPlot, svgPayload]);
 
-  // Render non-SVG RenderedView outputs through the plugin bridge.
+  // Render non-SVG RenderedView outputs through the plugin bridge. Verified:
+  // renderView() only activates the plugin and pushes data through the global
+  // plugin store — it never draws into this component's DOM, so an unmount
+  // mid-flight cannot write into detached containers.
   useEffect(() => {
     if (!target || !isRenderedView(target) || isSvgPlot) return;
     const host: ViewRenderHost = {
@@ -117,7 +120,8 @@ export function BlockPreview() {
   return (
     <div className="block-preview">
       <div className="block-preview-title">
-        {t('blocks.preview.title')}{outputIds.length > 0 ? `（${outputIds.length}）` : ''}
+        {t('blocks.preview.title')}
+        {outputIds.length > 0 ? t('blocks.preview.count', { count: outputIds.length }) : ''}
       </div>
       {outputIds.length > 1 && (
         <div className="block-preview-chips">
@@ -142,7 +146,7 @@ export function BlockPreview() {
             <div ref={svgHostRef} className="block-preview-svg-canvas" />
             <div className="block-preview-svg-actions">
               <button type="button" onClick={() => exportSVG(svgPayload.markup, 'plot.svg')}>
-                导出 SVG
+                {t('blocks.preview.export_svg')}
               </button>
               <button
                 type="button"
@@ -150,7 +154,7 @@ export function BlockPreview() {
                   exportPDF(svgPayload.markup, 'plot.pdf').catch((e) => console.error(e));
                 }}
               >
-                导出 PDF
+                {t('blocks.preview.export_pdf')}
               </button>
             </div>
           </div>

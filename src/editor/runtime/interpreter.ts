@@ -82,8 +82,25 @@ function applyBinary(op: BinaryOperator, l: Value, r: Value): Value {
   if (op === '+' && (typeof l === 'string' || typeof r === 'string')) {
     return String(l) + String(r);
   }
+  // Python semantics (the default codegen dialect): a number and a string are
+  // never equal and cannot be ordered. Without this the numeric fallback turned
+  // `'5' == 5` into `Number('5') === 5` → true, while the Python codegen emits
+  // `('5') == (5)` → False — a silent interpreter/codegen divergence.
+  if ((typeof l === 'string') !== (typeof r === 'string')) {
+    switch (op) {
+      case '==': return false;
+      case '!=': return true;
+      case '<': case '<=': case '>': case '>=':
+        throw new Error(`cannot compare a string with a number using "${op}"`);
+    }
+  }
   const a = toNum(l);
   const b = toNum(r);
+  // JS would return Infinity / NaN here and let it flow silently into every
+  // downstream statistic. Python raises, so expose the error instead.
+  if (b === 0 && (op === '/' || op === '//' || op === '%')) {
+    throw new Error('division by zero');
+  }
   switch (op) {
     case '+': return a + b;
     case '-': return a - b;
@@ -131,6 +148,9 @@ function toDataValue(v: Value): DataValue | null {
 }
 
 export class Interpreter {
+  /** Hard cap on user-function recursion depth (see `call`). */
+  private static readonly MAX_CALL_DEPTH = 500;
+
   private scopes: Map<string, Value>[] = [new Map()];
 
   constructor(private readonly studio: StudioApi) {}
@@ -303,6 +323,15 @@ export class Interpreter {
     const fn = this.resolve(callee);
     if (!fn || typeof fn !== 'object' || (fn as unknown as FuncValue).kind !== 'func') {
       throw new Error(`"${callee}" is not a function`);
+    }
+    // `Repeat`/`While` are capped at 1e6 iterations, but a self-recursive
+    // function (`def f(): f()`) had no limit and blew the JS stack — which
+    // surfaces as an unlocatable "Maximum call stack size exceeded".
+    const depth = this.scopes.length - 1;
+    if (depth >= Interpreter.MAX_CALL_DEPTH) {
+      throw new Error(
+        `call depth exceeded ${Interpreter.MAX_CALL_DEPTH} calling "${callee}" (recursion without a base case?)`,
+      );
     }
     const func = fn as unknown as FuncValue;
     const scope = new Map<string, Value>();

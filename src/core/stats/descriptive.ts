@@ -45,6 +45,10 @@ export function median(x: number[]): number {
 export function quantile(x: number[], p: number): number {
   const n = x.length;
   if (n === 0) return NaN;
+  // A single observation is its own quantile at every p. Without this the
+  // interpolation reads `s[lo + 1]`, which is out of bounds for n === 1 and
+  // makes q1/q3 NaN while the median stays valid.
+  if (n === 1) return x[0]!;
   if (p <= 0) return [...x].sort((a, b) => a - b)[0]!;
   if (p >= 1) return [...x].sort((a, b) => a - b)[n - 1]!;
   const s = [...x].sort((a, b) => a - b);

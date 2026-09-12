@@ -24,11 +24,64 @@ function stripBOM(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
+/**
+ * Split a delimited line into tokens.
+ *
+ * Supports RFC4180-style double-quoted fields (`"a,b"` stays one token and
+ * `""` is an escaped quote) alongside the comma / whitespace separation used by
+ * plain numeric data. A comma always closes a field — so `1,,3` yields an
+ * explicit empty middle field — while runs of whitespace collapse into a single
+ * separator (so `1   2` is two fields, not three).
+ */
 function splitTokens(line: string): string[] {
-  return line
-    .trim()
-    .split(/[\s,]+/)
-    .filter((t) => t.length > 0);
+  const tokens: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  let quoted = false;
+  /** A comma just closed a field, so a trailing comma still promises one more. */
+  let afterComma = false;
+
+  const flush = (force: boolean) => {
+    if (force || quoted || cur.length > 0) tokens.push(cur);
+    cur = '';
+    quoted = false;
+    afterComma = false;
+  };
+
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i]!;
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cur += ch;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = true;
+      quoted = true;
+      continue;
+    }
+    if (ch === ',') {
+      flush(true);
+      afterComma = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      // Collapse whitespace runs: only close a field that actually has content.
+      if (cur.length > 0 || quoted) flush(false);
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.length > 0 || quoted || afterComma) tokens.push(cur);
+  return tokens;
 }
 
 /**
@@ -36,7 +89,9 @@ function splitTokens(line: string): string[] {
  * containing a non-numeric token) supplies column names. The column count is
  * taken from the first numeric data row, so a header that is narrower or
  * wider than the data does not silently drop every row: names are padded with
- * defaults (or truncated) to match the data width. Malformed rows are skipped.
+ * defaults (or truncated) to match the data width. Rows with a non-numeric
+ * token or too many cells are skipped; rows with *missing* cells keep their
+ * present values and pad the rest with NaN.
  */
 function parseDelimitedColumns(
   text: string,
@@ -54,7 +109,8 @@ function parseDelimitedColumns(
 
   for (const line of lines) {
     const tokens = splitTokens(line);
-    if (tokens.length === 0) continue;
+    // Separator-only lines (`,,` / blank runs) carry no data.
+    if (tokens.length === 0 || tokens.every((t) => t === '')) continue;
 
     const isHeader = !started && tokens.some((t) => !Number.isFinite(Number(t)));
     if (isHeader) {
@@ -62,15 +118,24 @@ function parseDelimitedColumns(
       continue;
     }
 
-    const values = tokens.map((t) => Number(t));
-    if (values.some((v) => !Number.isFinite(v))) continue; // skip malformed rows
+    // An empty cell means "missing", not zero — `Number('')` is 0, so map it
+    // to NaN explicitly. A row is only malformed when a *present* token is
+    // non-numeric; missing cells are preserved as NaN.
+    const values = tokens.map((t) => (t === '' ? NaN : Number(t)));
+    const malformed = tokens.some((t, i) => t !== '' && !Number.isFinite(values[i]!));
+    if (malformed) continue; // skip malformed rows
+
     if (!started) {
       width = values.length;
       for (let i = 0; i < width; i += 1) columns.push([]);
       started = true;
     }
-    if (values.length !== width) continue; // skip ragged rows
-    values.forEach((v, i) => columns[i]!.push(v));
+    // A short row (e.g. a trailing field elided) keeps the cells it has and
+    // pads the rest with NaN. Only genuinely over-long rows are malformed.
+    if (values.length > width) continue;
+    for (let i = 0; i < width; i += 1) {
+      columns[i]!.push(i < values.length ? values[i]! : NaN);
+    }
   }
 
   if (!started) {

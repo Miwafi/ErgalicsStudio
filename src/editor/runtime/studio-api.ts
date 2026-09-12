@@ -114,8 +114,21 @@ function lcg(seed: number): () => number {
 
 // ---- comparison helper (column filter) ----
 
+/** Numeric value of a cell, or NaN when blank / not numerically comparable. */
+function cellNumber(a: unknown): number {
+  if (typeof a === 'number') return a;
+  if (typeof a === 'boolean') return a ? 1 : 0;
+  // `Number('')` is 0, so a blank cell must be turned into NaN explicitly.
+  if (typeof a === 'string' && a.trim() !== '') return Number(a);
+  return NaN;
+}
+
 function compare(a: unknown, op: ComparisonOp, b: number): boolean {
-  const x = typeof a === 'number' ? a : Number(a);
+  const x = cellNumber(a);
+  // A non-numeric cell never satisfies a numeric comparison — including `!=`,
+  // where `NaN !== b` was `true` and silently kept EVERY non-numeric row.
+  // This now matches the block-mode filter, which reads a numeric column.
+  if (!Number.isFinite(x)) return false;
   switch (op) {
     case '==': return x === b;
     case '!=': return x !== b;

@@ -16,13 +16,17 @@ const MARGIN = { top: 36, right: 20, bottom: 48, left: 60 };
 const TICK_LEN = 6;
 const COL_W = 150; // legend column width budget
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/#/g, '%23'); // '#' breaks hex colours inside attributes
+/** Escape text content. `#` is *not* special here and must survive verbatim. */
+function escapeText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Escape a value destined for a double-quoted attribute. Prevents breaking out
+ * of the attribute; `#` is deliberately preserved so hex colours still work.
+ */
+function escapeAttr(s: string): string {
+  return escapeText(s).replace(/"/g, '&quot;');
 }
 
 function autoDomain(series: PlotSeries[], axis: 'x' | 'y'): [number, number] | undefined {
@@ -40,9 +44,17 @@ function autoDomain(series: PlotSeries[], axis: 'x' | 'y'): [number, number] | u
       for (const p of s.points ?? []) vals.push(axis === 'x' ? p.x : p.y);
     }
   }
-  const finite = vals.filter((v) => Number.isFinite(v));
-  if (finite.length === 0) return undefined;
-  return [Math.min(...finite), Math.max(...finite)];
+  // Reduce rather than `Math.min(...finite)`: spreading a large sample blows the
+  // call stack (RangeError at roughly 125k elements) and crashed big plots.
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of vals) {
+    if (!Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (min > max) return undefined;
+  return [min, max];
 }
 
 /** Render a PlotSpec to a standalone SVG document string. */
@@ -106,7 +118,7 @@ export function renderSVG(spec: PlotSpec): string {
         const w = Math.max(0.5, Math.abs(x1 - x0) - 1);
         const h = Math.max(0, MARGIN.top + plotH - yTop);
         parts.push(
-          `<rect x="${(Math.min(x0, x1) + 0.5).toFixed(1)}" y="${yTop.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="${s.color}"/>`,
+          `<rect x="${(Math.min(x0, x1) + 0.5).toFixed(1)}" y="${yTop.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="${escapeAttr(s.color)}"/>`,
         );
       }
     } else if (s.kind === 'line') {
@@ -117,14 +129,14 @@ export function renderSVG(spec: PlotSpec): string {
           .join(' ');
         const dash = s.dash && s.dash.length ? ` stroke-dasharray="${s.dash.join(',')}"` : '';
         parts.push(
-          `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.6"${dash} stroke-linejoin="round" stroke-linecap="round"/>`,
+          `<path d="${d}" fill="none" stroke="${escapeAttr(s.color)}" stroke-width="1.6"${dash} stroke-linejoin="round" stroke-linecap="round"/>`,
         );
       }
     } else if (s.kind === 'scatter') {
       for (const p of s.points ?? []) {
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
         parts.push(
-          `<circle cx="${x.toPixel(p.x).toFixed(1)}" cy="${y.toPixel(p.y).toFixed(1)}" r="3.2" fill="${s.color}" fill-opacity="0.75" stroke="none"/>`,
+          `<circle cx="${x.toPixel(p.x).toFixed(1)}" cy="${y.toPixel(p.y).toFixed(1)}" r="3.2" fill="${escapeAttr(s.color)}" fill-opacity="0.75" stroke="none"/>`,
         );
       }
     }
@@ -146,7 +158,7 @@ export function renderSVG(spec: PlotSpec): string {
         `<line x1="${px.toFixed(1)}" y1="${MARGIN.top + plotH}" x2="${px.toFixed(1)}" y2="${(MARGIN.top + plotH + TICK_LEN).toFixed(1)}" stroke="#222" stroke-width="1"/>`,
       );
       parts.push(
-        `<text x="${px.toFixed(1)}" y="${MARGIN.top + plotH + TICK_LEN + 16}" font-size="13" text-anchor="middle" fill="#222">${escapeXml(t.label)}</text>`,
+        `<text x="${px.toFixed(1)}" y="${MARGIN.top + plotH + TICK_LEN + 16}" font-size="13" text-anchor="middle" fill="#222">${escapeText(t.label)}</text>`,
       );
     }
   } else {
@@ -157,7 +169,7 @@ export function renderSVG(spec: PlotSpec): string {
         `<line x1="${px.toFixed(1)}" y1="${MARGIN.top + plotH}" x2="${px.toFixed(1)}" y2="${(MARGIN.top + plotH + TICK_LEN).toFixed(1)}" stroke="#222" stroke-width="1"/>`,
       );
       parts.push(
-        `<text x="${px.toFixed(1)}" y="${MARGIN.top + plotH + TICK_LEN + 16}" font-size="13" text-anchor="middle" fill="#222">${escapeXml(formatTick(t))}</text>`,
+        `<text x="${px.toFixed(1)}" y="${MARGIN.top + plotH + TICK_LEN + 16}" font-size="13" text-anchor="middle" fill="#222">${escapeText(formatTick(t))}</text>`,
       );
     }
   }
@@ -169,26 +181,26 @@ export function renderSVG(spec: PlotSpec): string {
       `<line x1="${MARGIN.left}" y1="${py.toFixed(1)}" x2="${(MARGIN.left - TICK_LEN).toFixed(1)}" y2="${py.toFixed(1)}" stroke="#222" stroke-width="1"/>`,
     );
     parts.push(
-      `<text x="${(MARGIN.left - TICK_LEN - 6).toFixed(1)}" y="${(py + 4).toFixed(1)}" font-size="13" text-anchor="end" fill="#222">${escapeXml(formatTick(t))}</text>`,
+      `<text x="${(MARGIN.left - TICK_LEN - 6).toFixed(1)}" y="${(py + 4).toFixed(1)}" font-size="13" text-anchor="end" fill="#222">${escapeText(formatTick(t))}</text>`,
     );
   }
 
   // Axis labels.
   if (spec.xLabel) {
     parts.push(
-      `<text x="${(MARGIN.left + plotW / 2).toFixed(1)}" y="${(height - 10).toFixed(1)}" font-family="${FONT_AXIS}" font-size="14" text-anchor="middle" fill="#000">${escapeXml(spec.xLabel)}</text>`,
+      `<text x="${(MARGIN.left + plotW / 2).toFixed(1)}" y="${(height - 10).toFixed(1)}" font-family="${FONT_AXIS}" font-size="14" text-anchor="middle" fill="#000">${escapeText(spec.xLabel)}</text>`,
     );
   }
   if (spec.yLabel) {
     parts.push(
-      `<text transform="translate(${16},${(MARGIN.top + plotH / 2).toFixed(1)}) rotate(-90)" font-family="${FONT_AXIS}" font-size="14" text-anchor="middle" fill="#000">${escapeXml(spec.yLabel)}</text>`,
+      `<text transform="translate(${16},${(MARGIN.top + plotH / 2).toFixed(1)}) rotate(-90)" font-family="${FONT_AXIS}" font-size="14" text-anchor="middle" fill="#000">${escapeText(spec.yLabel)}</text>`,
     );
   }
 
   // Title.
   if (spec.title) {
     parts.push(
-      `<text x="${(width / 2).toFixed(1)}" y="22" font-family="${FONT_TITLE}" font-size="16" text-anchor="middle" fill="#000">${escapeXml(spec.title)}</text>`,
+      `<text x="${(width / 2).toFixed(1)}" y="22" font-family="${FONT_TITLE}" font-size="16" text-anchor="middle" fill="#000">${escapeText(spec.title)}</text>`,
     );
   }
 
@@ -202,13 +214,13 @@ export function renderSVG(spec: PlotSpec): string {
       const ly = MARGIN.top + i * itemH + 4;
       if (s.kind === 'line') {
         parts.push(
-          `<line x1="${legendX}" y1="${ly}" x2="${legendX + 18}" y2="${ly}" stroke="${s.color}" stroke-width="2"/>`,
+          `<line x1="${legendX}" y1="${ly}" x2="${legendX + 18}" y2="${ly}" stroke="${escapeAttr(s.color)}" stroke-width="2"/>`,
         );
       } else {
-        parts.push(`<rect x="${legendX}" y="${ly - 6}" width="14" height="12" fill="${s.color}"/>`);
+        parts.push(`<rect x="${legendX}" y="${ly - 6}" width="14" height="12" fill="${escapeAttr(s.color)}"/>`);
       }
       parts.push(
-        `<text x="${legendX + 24}" y="${ly + 4}" font-size="12" fill="#222">${escapeXml(s.name)}</text>`,
+        `<text x="${legendX + 24}" y="${ly + 4}" font-size="12" fill="#222">${escapeText(s.name)}</text>`,
       );
     });
     void COL_W;

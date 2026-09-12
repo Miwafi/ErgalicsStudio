@@ -10,12 +10,24 @@ import type { DataValue } from '@/types/datatable';
 import type { CompiledNode, CompiledRegion, DagExecutionContext } from '@/types/dag';
 import type { RuntimeEnvironment } from './context';
 
+/** Thrown when an in-flight run is cancelled through its `AbortSignal`. */
+export class ExecutorAbortedError extends Error {
+  constructor() {
+    super('execution cancelled');
+    this.name = 'ExecutorAbortedError';
+  }
+}
+
 export class DagExecutor {
   private readonly cache = new Map<string, DataValue>();
   private readonly dirty = new Set<string>();
   private readonly region: CompiledRegion;
   private readonly env: RuntimeEnvironment;
   private readonly nodeById = new Map<string, CompiledNode>();
+  /** The in-flight pass, so a second `run()` cannot race it. */
+  private inFlight: Promise<ReadonlyMap<string, DataValue>> | null = null;
+  /** Set by `cancel()`; checked before every node so a long graph stops promptly. */
+  private aborted = false;
 
   constructor(region: CompiledRegion, env: RuntimeEnvironment) {
     this.region = region;
@@ -29,9 +41,32 @@ export class DagExecutor {
     }
   }
 
+  /**
+   * Request cancellation of the in-flight pass. The running node finishes, but
+   * no further node starts. Without this, "Stop" only discarded the results —
+   * a long chain (N-body, large imports) kept burning CPU to completion.
+   */
+  cancel(): void {
+    this.aborted = true;
+  }
+
   /** Run all dirty nodes in topological order. Returns the full cache. */
   async run(): Promise<ReadonlyMap<string, DataValue>> {
+    // A second concurrent `run()` joins the in-flight pass instead of racing it
+    // for the shared cache/dirty state.
+    if (this.inFlight) return this.inFlight;
+    const pass = this.runPass();
+    this.inFlight = pass;
+    try {
+      return await pass;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+
+  private async runPass(): Promise<ReadonlyMap<string, DataValue>> {
     for (const id of this.region.executionOrder) {
+      if (this.aborted) throw new ExecutorAbortedError();
       if (!this.dirty.has(id)) continue;
       const node = this.nodeById.get(id);
       if (!node) continue;

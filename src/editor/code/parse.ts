@@ -56,14 +56,28 @@ export function parseCodeToIR(source: string, lang: SourceLang = 'python'): Pars
   return { program: makeProgram(body, [], lang), rawCount };
 }
 
-/** 移除結尾的行註解（Python 為 `#`，JS 為 `//`）。 */
+/**
+ * 移除結尾的行註解（Python/R 為 `#`，JS 為 `//`）。掃描時會跳過字串字面量，
+ * 否則 `x = studio.load('http://host/a')` 會被誤截成 `x = studio.load('http:`
+ * 而整行降級為 RawCode（`#` 在 `'a#b'` 中同理）。
+ */
 function stripComment(line: string, lang: SourceLang): string {
-  if (lang === 'python' || lang === 'r') {
-    const idx = line.indexOf('#');
-    return idx >= 0 ? line.slice(0, idx) : line;
+  const marker = lang === 'python' || lang === 'r' ? '#' : '//';
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i]!;
+    if (quote) {
+      if (ch === '\\') i += 1; // skip the escaped character
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (line.startsWith(marker, i)) return line.slice(0, i);
   }
-  const idx = line.indexOf('//');
-  return idx >= 0 ? line.slice(0, idx) : line;
+  return line;
 }
 
 /**

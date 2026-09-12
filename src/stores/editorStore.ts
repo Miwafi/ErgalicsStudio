@@ -84,6 +84,43 @@ function emptyProgram(): IRProgram {
   return makeProgram([]);
 }
 
+const CODE_LANGUAGES: readonly CodeLanguage[] = ['python', 'r', 'js'];
+const SYNC_STATES: readonly SyncState[] = ['clean', 'block-dirty', 'code-dirty', 'flow-dirty', 'conflict'];
+
+/** Minimal shape check for a persisted IR program — `ir.body.map` must not throw. */
+function isIRProgram(value: unknown): value is IRProgram {
+  if (!value || typeof value !== 'object') return false;
+  const p = value as Partial<IRProgram>;
+  return Array.isArray(p.body) && Array.isArray(p.functions);
+}
+
+/**
+ * Restore one persisted session, repairing what can be repaired. A `.clproj`
+ * is external input: a hand-edited or older file can carry the wrong type in
+ * any field, and a single bad session used to abort the whole project open.
+ */
+function sanitizeSession(raw: unknown): EditorSession | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Partial<EditorSession>;
+  if (typeof s.id !== 'string' || s.id.length === 0) return null;
+  const now = Date.now();
+  const language = CODE_LANGUAGES.find((l) => l === s.language) ?? 'python';
+  return {
+    id: s.id,
+    mode: s.mode === 'code' ? 'code' : 'block',
+    language,
+    ir: isIRProgram(s.ir) ? s.ir : emptyProgram(),
+    lastCode: typeof s.lastCode === 'string' ? s.lastCode : '',
+    ...(s.blockGraph === undefined ? {} : { blockGraph: s.blockGraph }),
+    ...(s.flowGraph === undefined ? {} : { flowGraph: s.flowGraph }),
+    // Unknown state → 'block-dirty', the safe direction: regenerate code from
+    // the IR instead of trusting a text buffer we cannot verify.
+    syncState: SYNC_STATES.find((v) => v === s.syncState) ?? 'block-dirty',
+    createdAt: typeof s.createdAt === 'number' ? s.createdAt : now,
+    updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : now,
+  };
+}
+
 function notifyChanged(): void {
   emit(EDITOR_STATE_CHANGED, undefined);
 }
@@ -218,9 +255,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   }),
 
   fromJSON: (state) => {
+    const rawSessions = (state as { sessions?: unknown } | null | undefined)?.sessions;
+    const sessions = (Array.isArray(rawSessions) ? rawSessions : [])
+      .map(sanitizeSession)
+      .filter((s): s is EditorSession => s !== null);
+    // A dangling activeSessionId leaves every `sessions.find(...)` lookup
+    // undefined, which then dereferences `undefined.ir` downstream.
+    const requested = (state as { activeSessionId?: unknown } | null | undefined)?.activeSessionId;
+    const activeSessionId =
+      typeof requested === 'string' && sessions.some((s) => s.id === requested)
+        ? requested
+        : (sessions[0]?.id ?? null);
     set({
-      sessions: state.sessions ?? [],
-      activeSessionId: state.activeSessionId ?? null,
+      sessions,
+      activeSessionId,
       variables: {},
       console: [],
       isRunning: false,

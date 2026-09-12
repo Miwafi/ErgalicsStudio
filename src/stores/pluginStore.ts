@@ -531,7 +531,6 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
     // set before the first `await`, so a second caller returned immediately
     // with a half-populated registry and silently skipped the built-ins.
     if (builtinsPromise) return builtinsPromise;
-    set({ initialized: true });
     builtinsPromise = (async () => {
       try {
         const { BUILTIN_PLUGINS } = await import('@/plugins/builtin');
@@ -547,8 +546,13 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
             logger.warn('plugin', 'failed to load builtin', { id: info.manifest.id }, err);
           }
         }
+        // Mark ready only once the registry is actually populated.
+        set({ initialized: true });
       } catch (err) {
         logger.error('plugin', 'failed to resolve builtin plugins', err);
+        // Release the cached promise so a later call retries instead of the
+        // registry staying permanently empty for the rest of the session.
+        builtinsPromise = null;
       }
     })();
     return builtinsPromise;

@@ -280,20 +280,28 @@ export function histogram(values: Float64Array, bins: number): Histogram {
   if (values.length === 0) return { centers, counts };
   let min = Infinity;
   let max = -Infinity;
+  let finite = 0;
   for (const v of values) {
+    if (!Number.isFinite(v)) continue;
+    finite += 1;
     if (v < min) min = v;
     if (v > max) max = v;
   }
-  // An all-NaN column leaves min=Infinity/max=-Infinity: bin centers would
-  // become ±Infinity and counts would land at undefined indices. Treat it as
-  // an empty signal — zeroed bins — instead of corrupting the histogram.
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return { centers, counts };
+  // An all-NaN column (or one that is entirely ±Infinity) leaves no finite
+  // value: bin centers would become ±Infinity and counts would land at
+  // undefined indices. Treat it as an empty signal — zeroed bins — instead of
+  // corrupting the histogram. A *single* non-finite value must not do this, so
+  // only bail out when nothing finite remains.
+  if (finite === 0) return { centers, counts };
   const range = max - min || 1;
   const step = range / bins;
   for (let b = 0; b < bins; b += 1) {
     centers[b] = min + step * (b + 0.5);
   }
   for (const v of values) {
+    // Skip non-finite values explicitly: `counts[NaN] = …` is silently ignored
+    // by a Float64Array, so relying on it would hide the drop.
+    if (!Number.isFinite(v)) continue;
     const idx = Math.min(bins - 1, Math.floor((v - min) / step));
     counts[idx] = (counts[idx] ?? 0) + 1;
   }

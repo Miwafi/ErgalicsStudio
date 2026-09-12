@@ -85,12 +85,24 @@ export function makeScale(
       toData: (p) => Math.pow(10, l0 + ((p - r0) / (r1 - r0)) * (l1 - l0)),
     };
   }
-  const [d0, d1] = domain;
+  let [d0, d1] = domain;
   const [r0, r1] = range;
+  // A degenerate (or all-non-finite) domain used to keep the original bounds
+  // while falling back to `span = 1`, which pinned a lone value to the left
+  // edge and disagreed with `niceTicks`. Expand it up-front so `domain` and the
+  // mapping stay consistent.
+  if (!Number.isFinite(d0) && !Number.isFinite(d1)) {
+    d0 = 0;
+    d1 = 1;
+  } else if (d0 === d1) {
+    const pad = d0 === 0 ? 1 : Math.abs(d0) * 0.1;
+    d0 -= pad;
+    d1 += pad;
+  }
   const span = d1 - d0 || 1;
   return {
     kind,
-    domain,
+    domain: [d0, d1],
     range,
     toPixel: (v) => r0 + ((v - d0) / span) * (r1 - r0),
     toData: (p) => d0 + ((p - r0) / (r1 - r0 || 1)) * span,

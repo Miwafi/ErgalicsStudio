@@ -89,6 +89,9 @@ function notifyChanged(): void {
  *  run can never write its results (or per-node status) over a newer one. */
 let runSeq = 0;
 
+/** The executor of the in-flight run, so `stop()` can actually cancel it. */
+let activeExecutor: DagExecutor | null = null;
+
 function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   const next = { ...record };
   delete next[key];
@@ -219,6 +222,8 @@ export const useBlockStore = create<BlockStore>((set, get) => ({
       },
     });
 
+    activeExecutor = executor;
+
     try {
       const cache = await executor.run();
       if (token !== runSeq) return; // superseded by stop() or a newer run
@@ -234,13 +239,17 @@ export const useBlockStore = create<BlockStore>((set, get) => ({
       }
       // Clear stale outputs so the preview cannot show old data beside an error.
       set({ isRunning: false, executionErrors: errors, nodeOutputs: {} });
+    } finally {
+      if (activeExecutor === executor) activeExecutor = null;
     }
   },
 
   stop: () => {
     // Invalidate any in-flight run so its late completion and per-node status
-    // writes are discarded.
+    // writes are discarded...
     runSeq += 1;
+    // ...and actually stop the computation, not just its result delivery.
+    activeExecutor?.cancel();
     set({ isRunning: false });
   },
 

@@ -31,9 +31,16 @@ export function tTestOneSample(data: number[], mu0 = 0): TestResult {
 
 /** Paired t-test: tests whether the mean difference `a - b` is zero. */
 export function tTestPaired(a: number[], b: number[]): TestResult {
-  const n = Math.min(a.length, b.length);
+  // A paired test needs matched observations. Truncating to the shorter sample
+  // (the previous behaviour) silently discarded data and skewed the result, so
+  // reject the mismatch instead.
+  if (a.length !== b.length) {
+    throw new Error(
+      `paired t-test requires equal-length samples (got ${a.length} and ${b.length})`,
+    );
+  }
   const diffs: number[] = [];
-  for (let i = 0; i < n; i += 1) diffs.push(a[i]! - b[i]!);
+  for (let i = 0; i < a.length; i += 1) diffs.push(a[i]! - b[i]!);
   return tTestOneSample(diffs, 0);
 }
 
@@ -57,7 +64,11 @@ export function tTestTwoSample(a: number[], b: number[], pooled = false): TestRe
     t = se === 0 ? 0 : (ma - mb) / se;
     const sa = va / na;
     const sb = vb / nb;
-    df = (sa + sb) ** 2 / (sa ** 2 / (na - 1) + sb ** 2 / (nb - 1));
+    const denom = sa ** 2 / (na - 1) + sb ** 2 / (nb - 1);
+    // Two constant samples make sa = sb = 0, so the Welch df is 0/0 = NaN and
+    // every downstream p-value becomes NaN. Fall back to the pooled df so the
+    // degenerate case reports t = 0, p = 1 (no detectable difference).
+    df = denom === 0 ? na + nb - 2 : (sa + sb) ** 2 / denom;
   }
   const p = 2 * (1 - studentTCdf(Math.abs(t), df));
   return { statistic: t, df, pValue: p };
@@ -67,6 +78,12 @@ export function tTestTwoSample(a: number[], b: number[], pooled = false): TestRe
 export function anovaOneWay(groups: number[][]): TestResult {
   const k = groups.length;
   if (k < 2) return { statistic: NaN, df: [NaN, NaN], pValue: NaN };
+  // An empty group has no mean, so `ssb` would become NaN and poison the whole
+  // test silently. Reject it explicitly instead.
+  const emptyAt = groups.findIndex((g) => g.length === 0);
+  if (emptyAt >= 0) {
+    throw new Error(`one-way ANOVA requires non-empty groups (group ${emptyAt} is empty)`);
+  }
   const all: number[] = [];
   for (const g of groups) for (const v of g) all.push(v);
   const n = all.length;

@@ -84,7 +84,7 @@ export default function WelcomePage() {
 
       <main className="welcome-main">
         <div className="welcome-hero">
-          <div className="welcome-eyebrow">ERGALICS · {t('welcome.subtitle')}</div>
+          <div className="welcome-eyebrow">ERGALICS · {t('welcome.eyebrow')}</div>
           <h1 className="welcome-title">{t('welcome.title')}</h1>
           <p className="welcome-subtitle">{t('welcome.subtitle')}</p>
           <p className="welcome-version">

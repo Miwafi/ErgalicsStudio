@@ -28,8 +28,14 @@ const DEFAULT_VIEWPORT: Viewport2D = { x: 0, y: 0, scale: 1 };
 
 let current: Viewport2D = { ...DEFAULT_VIEWPORT };
 
+/**
+ * Snapshot of the current viewport. Returns a copy on purpose: this used to
+ * hand out the live internal object, so a caller that cached the result kept
+ * reading stale values (setViewport2d replaces the object), and could even
+ * mutate the global view by writing a field.
+ */
 export function getViewport2d(): Viewport2D {
-  return current;
+  return { ...current };
 }
 
 export function setViewport2d(next: Viewport2D): void {
@@ -60,7 +66,9 @@ export function wrapCanvas2d(canvas: HTMLCanvasElement): void {
   const applyViewport = () => {
     const g = canvas.getContext('2d');
     if (!g) return;
-    const vp = getViewport2d();
+    // Read the live object directly: this runs on every width/height write,
+    // i.e. once per frame per draw, so a copy here would be pure GC churn.
+    const vp = current;
     g.setTransform(vp.scale, 0, 0, vp.scale, vp.x, vp.y);
   };
 

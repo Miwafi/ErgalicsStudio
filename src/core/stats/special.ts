@@ -183,12 +183,20 @@ export function studentTCdf(t: number, df: number): number {
 export function studentTInv(p: number, df: number): number {
   if (p <= 0) return -Infinity;
   if (p >= 1) return Infinity;
-  // Seed the bracket with the normal quantile, then widen.
+  if (!Number.isFinite(df) || df <= 0) return NaN;
+  // Seed the bracket with the normal quantile, then *expand* until the CDF
+  // really brackets `p`. A fixed ±20 window used to clip heavy-tailed small-df
+  // quantiles badly — df=1 needs ~63.7 at p=0.995 and ~318 at p=0.999, so the
+  // old cap silently returned 20 and made confidence intervals far too narrow.
   const z = normalInv(p);
-  let lo = z - 20;
-  let hi = z + 20;
-  for (let i = 0; i < 300; i += 1) {
+  let lo = z - 1;
+  let hi = z + 1;
+  for (let i = 0; i < 200 && studentTCdf(lo, df) > p; i += 1) lo -= hi - lo;
+  for (let i = 0; i < 200 && studentTCdf(hi, df) < p; i += 1) hi += hi - lo;
+  for (let i = 0; i < 200; i += 1) {
     const mid = (lo + hi) / 2;
+    // Stop once float precision is exhausted (also guards a degenerate bracket).
+    if (mid === lo || mid === hi) break;
     if (studentTCdf(mid, df) < p) lo = mid;
     else hi = mid;
   }

@@ -36,6 +36,11 @@
   --shadow-2: 0 6px 20px rgba(0, 0, 0, 0.22);
   --shadow-3: 0 16px 48px rgba(0, 0, 0, 0.32);
   --focus-ring: 0 0 0 2px var(--color-bg-primary), 0 0 0 4px var(--color-accent);
+  /* Motion easing. `--ease-out` matches the console's calm settle;
+     `--ease-spring` adds a hair of overshoot for "pop" entrances without
+     feeling bouncy. */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
 }
 
 /* ---- dark theme (default) — graphite console ---- */
@@ -63,6 +68,15 @@
   --color-accent-active: #14b8a6;
   --color-accent-soft: rgba(45, 212, 191, 0.14);
   --color-accent-text: #5eead4;
+
+  /* Block-category badge hues (consumed by .cat-* in app.css). Defined per
+     theme: the bright dark-theme accents fail contrast on a light surface. */
+  --cat-scientific: #22d3ee;
+  --cat-scientific-soft: rgba(34, 211, 238, 0.16);
+  --cat-fun: #f472b6;
+  --cat-fun-soft: rgba(244, 114, 182, 0.16);
+  --cat-utility: #a78bfa;
+  --cat-utility-soft: rgba(167, 139, 250, 0.16);
 
   --color-success: #34d399;
   --color-warning: #fbbf24;
@@ -101,6 +115,15 @@
   --color-accent-active: #0a5f56;
   --color-accent-soft: rgba(14, 147, 132, 0.12);
   --color-accent-text: #0b7a6e;
+
+  /* Darker variants of the badge hues: the dark-theme cyan/pink/violet sit
+     near 2:1 contrast on white. */
+  --cat-scientific: #0e7490;
+  --cat-scientific-soft: rgba(14, 116, 144, 0.12);
+  --cat-fun: #be185d;
+  --cat-fun-soft: rgba(190, 24, 93, 0.12);
+  --cat-utility: #6d28d9;
+  --cat-utility-soft: rgba(109, 40, 217, 0.12);
 
   --color-success: #15803d;
   --color-warning: #b45309;
@@ -209,22 +232,28 @@ button {
   font-size: var(--font-size-sm);
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  /* Lift + press feedback. */
   transition:
     background var(--transition-fast),
     border-color var(--transition-fast),
     color var(--transition-fast),
-    box-shadow var(--transition-fast);
-  white-space: nowrap;
-  user-select: none;
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .btn:hover:not(:disabled) {
   background: var(--color-bg-hover);
   border-color: var(--color-border-hover);
+  transform: translateY(-1px);
+  will-change: transform;
 }
 
 .btn:active:not(:disabled) {
   background: var(--color-bg-active);
+  transform: translateY(0) scale(0.97);
+  will-change: transform;
 }
 
 .btn:disabled {
@@ -265,7 +294,6 @@ button {
 
 .btn-ghost:hover:not(:disabled) {
   background: var(--color-bg-hover);
-  transform: none;
 }
 
 .btn-danger {
@@ -276,7 +304,6 @@ button {
 
 .btn-danger:hover:not(:disabled) {
   background: var(--color-error-soft);
-  transform: none;
 }
 
 .btn-sm {
@@ -344,6 +371,14 @@ button {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-1);
+  transition: transform var(--transition-base), box-shadow var(--transition-base),
+    border-color var(--transition-fast);
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+  border-color: var(--color-border-hover);
 }
 
 .tag {
@@ -495,8 +530,13 @@ button {
 }
 
 .modal {
-  min-width: 420px;
-  max-width: 640px;
+  /* A caller-supplied size arrives as custom properties rather than inline
+     `min/max-width`: an inline style outranks every stylesheet rule (including
+     media queries), which is why wide dialogs used to hang off-screen on a
+     phone with their close button cut off. The viewport is now a hard cap. */
+  width: var(--modal-width, auto);
+  min-width: min(var(--modal-min-width, 420px), calc(100vw - var(--space-4) * 2));
+  max-width: min(var(--modal-max-width, 640px), calc(100vw - var(--space-4) * 2));
   max-height: 82vh;
   display: flex;
   flex-direction: column;
@@ -511,8 +551,7 @@ button {
 @media (max-width: 480px) {
   .modal {
     min-width: 0;
-    width: calc(100vw - var(--space-4) * 2);
-    max-width: 100vw;
+    max-width: calc(100vw - var(--space-4) * 2);
   }
 }
 
@@ -568,12 +607,17 @@ button {
   color: var(--color-text-secondary);
   cursor: pointer;
   font-size: var(--font-size-md);
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .icon-btn:hover {
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.9);
 }
 
 /* ---- banner / toast ---- */

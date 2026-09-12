@@ -15,6 +15,8 @@ import { loadWasm } from '@/core/wasm';
 import { BlockWorkbench } from '@/components/blocks/BlockWorkbench';
 import { initBlockSystem } from '@/blocks';
 import { useFlowSync } from '@/stores/useFlowSync';
+import { TourGuide } from '@/components/TourGuide';
+import { useTourStore, tourSeen } from '@/stores/tourStore';
 
 // Blockly (and, later, Monaco/Pyodide) are large and loaded on demand so the
 // Standard/Flow first paint is unaffected (editor architecture §1.1).
@@ -36,6 +38,15 @@ export default function WorkbenchPage() {
 
   // Keep the Flow DAG in three-way sync with Block/Code via the IR hub.
   useFlowSync();
+
+  // First visit to the workbench: auto-start the guided tour once the layout
+  // has settled. Skipped/completed tours are remembered in localStorage and
+  // never auto-offered again (the top-bar "?" button re-runs it on demand).
+  useEffect(() => {
+    if (tourSeen()) return;
+    const timer = window.setTimeout(() => useTourStore.getState().start(), 900);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     perfMonitor.start();
@@ -78,7 +89,12 @@ export default function WorkbenchPage() {
 
   return (
     <div className="workbench">
-      <TopBar />
+      {/* TopBar and StatusBar get their own boundaries: previously a crash in
+          either propagated to the App-level boundary and replaced the *whole*
+          application with the fallback. */}
+      <ErrorBoundary>
+        <TopBar />
+      </ErrorBoundary>
       <div className="workbench-body">
         <ErrorBoundary>
           <Suspense fallback={<div className="workbench-loading"><span className="spinner" /></div>}>
@@ -98,7 +114,10 @@ export default function WorkbenchPage() {
           </Suspense>
         </ErrorBoundary>
       </div>
-      <StatusBar />
+      <ErrorBoundary>
+        <StatusBar />
+      </ErrorBoundary>
+      <TourGuide />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useT } from '@/i18n';
 import { DEFAULT_PROJECT_NAME } from '@/types/project';
 import { useProjectStore } from '@/stores/projectStore';
 import { usePluginStore } from '@/stores/pluginStore';
+import { useTourStore } from '@/stores/tourStore';
 import { useAppStore } from '@/stores/appStore';
 import { downloadBlob } from '@/core/download';
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
@@ -32,6 +33,7 @@ export function TopBar() {
   const setMode = useAppStore((s) => s.setMode);
   const perfFps = useAppStore((s) => s.perf.fps);
   const perfWarnFps = useAppStore((s) => s.perf.warnings.fps);
+  const startTour = useTourStore((s) => s.start);
 
   const [shareOpen, setShareOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
@@ -86,7 +88,7 @@ export function TopBar() {
         </div>
 
         <div className="topbar-cluster">
-          <button type="button" className="cluster-btn" onClick={() => setExampleOpen(true)}>
+          <button type="button" className="cluster-btn" data-tour="examples" onClick={() => setExampleOpen(true)}>
             {t('workbench.example.title')}
           </button>
           <button
@@ -113,6 +115,15 @@ export function TopBar() {
         </div>
 
         <div className="topbar-cluster cluster-icons">
+          <button
+            type="button"
+            className="cluster-btn"
+            title={t('workbench.tour.title')}
+            aria-label={t('workbench.tour.title')}
+            onClick={startTour}
+          >
+            ?
+          </button>
           <button
             type="button"
             className={`cluster-btn perf-entry${perfWarnFps && perfFps > 0 ? ' perf-warn' : ''}`}

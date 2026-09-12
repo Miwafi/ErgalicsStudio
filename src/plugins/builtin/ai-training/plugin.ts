@@ -507,8 +507,15 @@ export class AITrainingPlugin implements Plugin {
 
     if (spec.task === 'regression') {
       const xsCol = rawXs.map((r) => r[0]!);
-      const minX = Math.min(...xsCol);
-      const maxX = Math.max(...xsCol);
+      // Reduce instead of spreading: `Math.min(...xsCol)` throws RangeError once
+      // the training set grows past ~125k rows.
+      let minX = Infinity;
+      let maxX = -Infinity;
+      for (const v of xsCol) {
+        if (v < minX) minX = v;
+        if (v > maxX) maxX = v;
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return;
       const n = 60;
       const gx: number[] = [];
       const gy: number[] = [];

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 interface ModalProps {
   open: boolean;
@@ -7,11 +7,33 @@ interface ModalProps {
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /** Preferred width in px. The viewport width always wins (see `.modal`). */
   width?: number;
 }
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Number of open modals that currently hold the body scroll lock. Restoring a
+ * mount-time snapshot broke with stacked dialogs: closing the inner one wrote
+ * back "hidden" (its own snapshot) and the page stayed frozen.
+ */
+let scrollLocks = 0;
+let savedOverflow = '';
+
+function lockScroll(): void {
+  if (scrollLocks === 0) {
+    savedOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  }
+  scrollLocks += 1;
+}
+
+function unlockScroll(): void {
+  scrollLocks = Math.max(0, scrollLocks - 1);
+  if (scrollLocks === 0) document.body.style.overflow = savedOverflow;
+}
 
 export function Modal({ open, title, onClose, children, footer, width }: ModalProps) {
   // Keep the handler in a ref so the effect below doesn't re-subscribe on
@@ -48,9 +70,9 @@ export function Modal({ open, title, onClose, children, footer, width }: ModalPr
       }
     };
     document.addEventListener('keydown', onKey);
-    // Lock background scroll while the dialog is open.
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    // Lock background scroll while the dialog is open (ref-counted so stacked
+    // dialogs release it only when the last one closes).
+    lockScroll();
     // Move focus into the dialog.
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const timer = window.setTimeout(() => {
@@ -58,7 +80,7 @@ export function Modal({ open, title, onClose, children, footer, width }: ModalPr
     }, 0);
     return () => {
       document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prevOverflow;
+      unlockScroll();
       window.clearTimeout(timer);
       previouslyFocused?.focus?.();
     };
@@ -66,11 +88,22 @@ export function Modal({ open, title, onClose, children, footer, width }: ModalPr
 
   if (!open) return null;
 
+  // The size goes through custom properties so `.modal` can still cap it to
+  // the viewport in CSS — inline `max-width` cannot be overridden by a media
+  // query, so it made wide dialogs unusable on narrow screens.
+  const sizeVars = width
+    ? ({
+        '--modal-width': `${width}px`,
+        '--modal-min-width': `${width}px`,
+        '--modal-max-width': `${width}px`,
+      } as CSSProperties)
+    : undefined;
+
   return (
     <div ref={overlayRef} className="modal-overlay" onClick={() => onCloseRef.current()}>
       <div
         className="modal"
-        style={width ? { minWidth: width, maxWidth: width } : undefined}
+        style={sizeVars}
         role="dialog"
         aria-modal="true"
         aria-label={title}
