@@ -344,6 +344,22 @@ export function packNBodyParams(dt: number, G: number, softening: number, count:
  * advances velocity and position (semi-implicit Euler), mirroring the WGSL
  * math exactly so CPU and GPU produce matching trajectories.
  */
+/**
+ * Scratch accumulators reused between `advanceNBodyCPU` calls.
+ *
+ * The integrator runs once per animation frame; allocating three
+ * `Float64Array(n)` per call handed the GC ~180 KB of garbage every frame
+ * at the CPU cap. Grown on demand, never shrunk.
+ */
+let nbodyScratch: { ax: Float64Array; ay: Float64Array; az: Float64Array } | null = null;
+
+function nbodyScratchFor(n: number) {
+  if (!nbodyScratch || nbodyScratch.ax.length < n) {
+    nbodyScratch = { ax: new Float64Array(n), ay: new Float64Array(n), az: new Float64Array(n) };
+  }
+  return nbodyScratch;
+}
+
 export function advanceNBodyCPU(
   bodies: NBodyBody[],
   dt: number,
@@ -351,31 +367,37 @@ export function advanceNBodyCPU(
   softening: number,
 ): void {
   const n = bodies.length;
-  const ax = new Float64Array(n);
-  const ay = new Float64Array(n);
-  const az = new Float64Array(n);
+  const { ax, ay, az } = nbodyScratchFor(n);
+  ax.fill(0, 0, n);
+  ay.fill(0, 0, n);
+  az.fill(0, 0, n);
+  // Newton's third law: each pair is evaluated once and applied with equal
+  // and opposite sign. Mathematically identical to the previous all-j sweep
+  // (which visited every pair twice) at half the work — the headroom that
+  // lets the interactive loop integrate the whole drawn set instead of a
+  // prefix of it.
+  const eps2 = softening * softening;
   for (let i = 0; i < n; i += 1) {
     const bi = bodies[i] as NBodyBody;
-    let axi = 0;
-    let ayi = 0;
-    let azi = 0;
-    for (let j = 0; j < n; j += 1) {
-      if (j === i) continue;
+    for (let j = i + 1; j < n; j += 1) {
       const bj = bodies[j] as NBodyBody;
       const dx = bj.x - bi.x;
       const dy = bj.y - bi.y;
       const dz = bj.z - bi.z;
-      const distSq = dx * dx + dy * dy + dz * dz + softening * softening;
+      const distSq = dx * dx + dy * dy + dz * dz + eps2;
       const invDist = 1 / Math.sqrt(distSq);
       const invDist3 = invDist * invDist * invDist;
       const f = (G * bi.mass * bj.mass) * invDist3;
-      axi += f * dx;
-      ayi += f * dy;
-      azi += f * dz;
+      const fx = f * dx;
+      const fy = f * dy;
+      const fz = f * dz;
+      ax[i] = (ax[i] ?? 0) + fx;
+      ay[i] = (ay[i] ?? 0) + fy;
+      az[i] = (az[i] ?? 0) + fz;
+      ax[j] = (ax[j] ?? 0) - fx;
+      ay[j] = (ay[j] ?? 0) - fy;
+      az[j] = (az[j] ?? 0) - fz;
     }
-    ax[i] = axi;
-    ay[i] = ayi;
-    az[i] = azi;
   }
   for (let i = 0; i < n; i += 1) {
     const bi = bodies[i] as NBodyBody;
@@ -942,6 +964,35 @@ fn opp(d: u32) -> u32 {
 }
 
 /**
+ * Width (in cells) of the absorbing layer in front of the outflow boundary,
+ * and its peak relaxation strength.
+ *
+ * A zero-gradient outflow alone still reflects part of an outgoing pressure
+ * wave, and with a fixed-density inflow at the other end the channel turns
+ * into a resonant cavity — waves bounce off the downstream edge and travel
+ * back upstream forever. Relaxing the last few percent of the domain toward
+ * the free-stream equilibrium drains them instead: the flow field behaves as
+ * if it continued past the right edge.
+ */
+export function fluidSpongeWidth(width: number): number {
+  return Math.max(4, Math.floor(width / 12));
+}
+
+export const FLUID_SPONGE_STRENGTH = 0.3;
+
+/** WGSL snippet: absorbing-layer strength for column `x` of `params.width`. */
+function fluidSpongeWGSL(): string {
+  return `
+fn spongeStrength(x: u32, width: u32) -> f32 {
+  let w = max(4u, width / 12u);
+  if (x + w < width) { return 0.0; }
+  let d = f32(x + w + 1u - width) / f32(w);
+  return ${FLUID_SPONGE_STRENGTH.toFixed(3)} * d * d;
+}
+`;
+}
+
+/**
  * Kernel 1 of 2 per step: BGK collision. Reads the population field, writes
  * the post-collision field (zeros at solid cells). Bind group:
  *   @binding(0) read-only-storage  — fin    : f32[width*height*9]
@@ -965,6 +1016,7 @@ export function fluidCollideKernelWGSL(opts: FluidKernelOptions = {}): string {
 @group(0) @binding(2) var<storage, read> flags: array<f32>;
 @group(0) @binding(3) var<uniform> params: Params;
 ${fluidDirectionHelpers()}
+${fluidSpongeWGSL()}
 @compute @workgroup_size(${ws}, ${ws})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = gid.x;
@@ -991,10 +1043,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   ux = ux / rho;
   uy = uy / rho;
   let u2 = ux * ux + uy * uy;
+  // Absorbing layer in front of the outflow boundary (see fluidSpongeWidth).
+  let sp = spongeStrength(x, params.width);
   for (var d: u32 = 0u; d < 9u; d = d + 1u) {
     let eu = f32(exv(d)) * ux + f32(eyv(d)) * uy;
     let feq = weight(d) * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * u2);
-    fout[base + d] = fin[base + d] + params.omega * (feq - fin[base + d]);
+    var out = fin[base + d] + params.omega * (feq - fin[base + d]);
+    if (sp > 0.0) {
+      let eu0 = params.u0 * f32(exv(d));
+      let feq0 = weight(d) * (1.0 + 3.0 * eu0 + 4.5 * eu0 * eu0 - 1.5 * params.u0 * params.u0);
+      out = out + sp * (feq0 - out);
+    }
+    fout[base + d] = out;
   }
 }
 `;
@@ -1137,6 +1197,10 @@ export function fluidStepCPU(
   u0: number,
 ): void {
   // ---- collide (f → fpost) ----
+  // Free-stream equilibrium the absorbing layer relaxes toward (mirrors the
+  // WGSL `feq0`), and the column where that layer starts.
+  const feq0 = fluidEquilibrium(1, u0, 0);
+  const spongeStart = width - fluidSpongeWidth(width);
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const cell = y * width + x;
@@ -1157,11 +1221,19 @@ export function fluidStepCPU(
       ux /= rho;
       uy /= rho;
       const u2 = ux * ux + uy * uy;
+      // Absorbing layer in front of the outflow boundary: drains outgoing
+      // waves instead of letting them reflect off the last column.
+      let sp = 0;
+      if (x >= spongeStart) {
+        const t = (x - spongeStart + 1) / (width - spongeStart);
+        sp = FLUID_SPONGE_STRENGTH * t * t;
+      }
       for (let d = 0; d < FLUID_DIRECTIONS; d += 1) {
         const fv = f[base + d]!;
         const eu = FLUID_EX[d]! * ux + FLUID_EY[d]! * uy;
         const feq = FLUID_WEIGHTS[d]! * rho * (1 + 3 * eu + 4.5 * eu * eu - 1.5 * u2);
-        fpost[base + d] = fv + omega * (feq - fv);
+        const out = fv + omega * (feq - fv);
+        fpost[base + d] = sp > 0 ? out + sp * (feq0[d]! - out) : out;
       }
     }
   }
@@ -1205,11 +1277,18 @@ export function fluidMacroCPU(
   f: Float32Array,
   width: number,
   height: number,
+  /**
+   * Caller-owned buffers to fill. Pass them from a render loop: drawing
+   * derives the macroscopic fields every frame, and three fresh
+   * `Float32Array(cells)` per frame is ~0.6 MB of garbage at the standard
+   * lattice — enough to make the animation hitch.
+   */
+  out?: { rho: Float32Array; ux: Float32Array; uy: Float32Array },
 ): { rho: Float32Array; ux: Float32Array; uy: Float32Array } {
   const cells = width * height;
-  const rho = new Float32Array(cells);
-  const ux = new Float32Array(cells);
-  const uy = new Float32Array(cells);
+  const rho = out?.rho.length === cells ? out.rho : new Float32Array(cells);
+  const ux = out?.ux.length === cells ? out.ux : new Float32Array(cells);
+  const uy = out?.uy.length === cells ? out.uy : new Float32Array(cells);
   for (let cell = 0; cell < cells; cell += 1) {
     const base = cell * FLUID_DIRECTIONS;
     let r = 0;

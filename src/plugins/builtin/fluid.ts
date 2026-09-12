@@ -75,6 +75,35 @@ const SIZES = {
 
 const MAX_MASK = 512;
 
+/**
+ * Steps over which the inflow is ramped from rest to the requested speed
+ * after every reseed.
+ *
+ * Seeding the channel at full speed with the obstacle already in place is an
+ * impulsive start: it launches a compression wave that crosses the domain,
+ * reflects off the downstream edge and sloshes back and forth for thousands
+ * of steps. Ramping the inflow removes the shock at the source.
+ */
+const INFLOW_RAMP_STEPS = 300;
+
+/** A diverging lattice is never local — sample it instead of sweeping it. */
+const STABILITY_SCAN_STRIDE = 97;
+
+/**
+ * Relaxation bounds. ω = 2 − 1/τ, so the ceiling fixes how close to the
+ * τ = 0.5 stability limit the solver is allowed to run.
+ */
+const OMEGA_MIN = 1.6;
+const OMEGA_MAX = 1.9;
+
+/**
+ * Frames between full field read-backs on the GPU path. The per-frame
+ * read-back is deliberately limited to the small curl buffer (the
+ * population field is several MB), but the CPU copy still has to be
+ * refreshed now and then so the divergence guard sees real data.
+ */
+const GPU_SYNC_EVERY = 30;
+
 interface State {
   omega: number;
   u0: number;
@@ -92,11 +121,12 @@ export class FluidPlugin implements Plugin {
   private api!: PluginApi;
   private ctx: ContainerCapabilities | null = null;
   private state: State = {
-    omega: 1.9,
+    omega: 1.8,
     u0: 0.1,
     // Velocity view by default: the incoming flow is visible across the
     // whole channel; vorticity (zero for uniform flow) is one switch away.
-    view: 'speed',    running: false,
+    view: 'speed',
+    running: false,
     lattice: 'standard',
     hasData: false,
   };
@@ -117,6 +147,24 @@ export class FluidPlugin implements Plugin {
    * population field is several MB — too heavy to copy every frame).
    */
   private gpuDirty = true;
+  /** Steps taken since the last reseed — drives the inflow ramp. */
+  private stepsSinceSeed = 0;
+  /** Frame counter for the periodic GPU → CPU field sync. */
+  private frameNo = 0;
+  /** Set once a divergence has been reported, so it is not re-reported on
+   *  every frame until the user restarts or reloads. */
+  private diverged = false;
+
+  /**
+   * Inflow speed actually fed to the solver.
+   *
+   * Smoothstep from rest to `state.u0` over `INFLOW_RAMP_STEPS`.
+   */
+  private get inflowU0(): number {
+    if (this.stepsSinceSeed >= INFLOW_RAMP_STEPS) return this.state.u0;
+    const t = Math.max(0, this.stepsSinceSeed / INFLOW_RAMP_STEPS);
+    return this.state.u0 * t * t * (3 - 2 * t);
+  }
 
   async init(api: PluginApi) {
     this.api = api;
@@ -163,9 +211,11 @@ export class FluidPlugin implements Plugin {
 
   updateParams(params: Record<string, unknown>) {
     if (typeof params.omega === 'number') {
-      // Clamp to the declared range [1.7, 1.95] — beyond 1.95 the BGK
-      // relaxation goes numerically unstable at this resolution.
-      this.state.omega = Math.max(1.7, Math.min(1.95, params.omega));
+      // Clamp to the declared range [1.6, 1.9] — ω → 2 means relaxation
+      // time τ → 0.5, where BGK goes numerically unstable at this
+      // resolution (τ = 0.513 at the old 1.95 ceiling diverged on a
+      // routine channel run).
+      this.state.omega = Math.max(OMEGA_MIN, Math.min(OMEGA_MAX, params.omega));
     }
     if (typeof params.u0 === 'number') {
       // Clamp to the declared range [0.02, 0.18] — above ~0.18 the LBM
@@ -228,8 +278,8 @@ export class FluidPlugin implements Plugin {
         label: 'Relaxation (1/viscosity)',
         labelI18n: { 'zh-CN': '松弛率（黏度倒数）', 'en-US': 'Relaxation (1/viscosity)' },
         type: 'range',
-        min: 1.7,
-        max: 1.95,
+        min: OMEGA_MIN,
+        max: OMEGA_MAX,
         step: 0.01,
         value: this.state.omega,
       },
@@ -304,9 +354,14 @@ export class FluidPlugin implements Plugin {
       this.api.notify('warning', this.api.locale === 'zh-CN' ? '需要 0/1 二值网格作为障碍掩膜' : 'Expected a 0/1 grid as the obstacle mask');
       return;
     }
+    // A new mask invalidates a *running* simulation: halt it first so the
+    // freshly seeded field is not immediately advanced by the still-running
+    // frame loop. The user restarts explicitly with Run.
+    if (this.state.running) this.stop();
     // Keep the parsed mask so a Lattice Detail change can replay it.
     this.maskData = mask;
     this.state.hasData = true;
+    this.diverged = false;
     this.applyMask(mask);
     this.seed();
     this.draw();
@@ -360,7 +415,8 @@ export class FluidPlugin implements Plugin {
     }
 
     for (let s = 0; s < steps; s += 1) {
-      fluidStepCPU(this.f, this.fpost, this.flags, this.cols, this.rows, this.state.omega, this.state.u0);
+      fluidStepCPU(this.f, this.fpost, this.flags, this.cols, this.rows, this.state.omega, this.inflowU0);
+      this.stepsSinceSeed += 1;
       await onProgress?.({ done: s + 1, total: steps });
     }
     this.draw();
@@ -375,7 +431,12 @@ export class FluidPlugin implements Plugin {
    * loaded mask — there is no built-in default shape.
    */
   private seed() {
-    const feq = fluidEquilibrium(1, this.state.u0, 0);
+    // Restart the inflow ramp: the field is seeded at rest and the inflow
+    // eases in, so the obstacle never appears "all at once" (the impulsive
+    // start that produced the domain-crossing pressure wave).
+    this.stepsSinceSeed = 0;
+    const uStart = this.inflowU0;
+    const feq = fluidEquilibrium(1, uStart, 0);
     for (let y = 0; y < this.rows; y += 1) {
       for (let x = 0; x < this.cols; x += 1) {
         const base = (y * this.cols + x) * FLUID_DIRECTIONS;
@@ -386,9 +447,9 @@ export class FluidPlugin implements Plugin {
     }
     // Weak inlet perturbation so the wake breaks symmetry and sheds.
     for (let y = 0; y < this.rows; y += 1) {
-      const uy = this.state.u0 * 0.05 * Math.sin((2 * Math.PI * 3 * y) / this.rows);
+      const uy = uStart * 0.05 * Math.sin((2 * Math.PI * 3 * y) / this.rows);
       const base = (y * this.cols + 1) * FLUID_DIRECTIONS;
-      const feqWiggle = fluidEquilibrium(1, this.state.u0, uy);
+      const feqWiggle = fluidEquilibrium(1, uStart, uy);
       for (let d = 0; d < FLUID_DIRECTIONS; d += 1) this.f[base + d] = feqWiggle[d]!;
     }
     this.gpuDirty = true;
@@ -406,6 +467,7 @@ export class FluidPlugin implements Plugin {
       );
       return;
     }
+    this.diverged = false;
     this.state.running = true;
     this.api.setStatus('computing');
     this.rafId = requestAnimationFrame(this.tick);
@@ -423,8 +485,12 @@ export class FluidPlugin implements Plugin {
     if (gpu?.available) {
       // GPU path: advance a batch, read the result + curl back, then draw.
       // The wind-flow view additionally needs the velocity field every frame
-      // for particle advection, so it forces a field readback.
-      const opts = this.state.view === 'flow' ? { read: true } : {};
+      // for particle advection, so it forces a field readback; every other
+      // view pulls the full field back periodically so the CPU-side copy the
+      // divergence guard inspects never goes stale.
+      this.frameNo += 1;
+      const opts =
+        this.state.view === 'flow' || this.frameNo % GPU_SYNC_EVERY === 0 ? { read: true } : {};
       void this.gpuAdvance(gpu, this.stepsPerFrame, undefined, opts).then(
         (ok) => {
           if (ok) this.draw();
@@ -444,7 +510,8 @@ export class FluidPlugin implements Plugin {
 
   private stepCpu() {
     for (let s = 0; s < this.stepsPerFrame; s += 1) {
-      fluidStepCPU(this.f, this.fpost, this.flags, this.cols, this.rows, this.state.omega, this.state.u0);
+      fluidStepCPU(this.f, this.fpost, this.flags, this.cols, this.rows, this.state.omega, this.inflowU0);
+      this.stepsSinceSeed += 1;
     }
   }
 
@@ -452,6 +519,42 @@ export class FluidPlugin implements Plugin {
   private drawCpuFrame() {
     this.stepCpu();
     this.draw();
+  }
+
+  /**
+   * Whether the lattice has diverged.
+   *
+   * A BGK run that goes unstable never recovers by itself — the populations
+   * fill with NaN/inf and every later frame renders garbage. Sampling the
+   * macroscopic fields (and, on the GPU path, the curl read back each frame)
+   * catches it while it is cheap to fix.
+   */
+  private hasDiverged(rho: Float32Array, ux: Float32Array, uy: Float32Array): boolean {
+    for (let cell = 0; cell < rho.length; cell += STABILITY_SCAN_STRIDE) {
+      // Solid cells legitimately hold zero populations.
+      if (this.flags[cell]! > 0.5) continue;
+      const r = rho[cell]!;
+      const speed = Math.abs(ux[cell]!) + Math.abs(uy[cell]!);
+      // Thresholds sit far outside anything physical (u0 ≤ 0.18, so a
+      // legitimate peak is well under 1) — only a diverged run reaches them.
+      if (!Number.isFinite(r) || !Number.isFinite(speed)) return true;
+      if (r < 0.2 || r > 3 || speed > 0.75) return true;
+    }
+    return false;
+  }
+
+  /** Recover from a diverged lattice: reseed, stop, and tell the user. */
+  private recoverFromDivergence() {
+    if (this.diverged) return; // already reported — do not reseed every frame
+    this.diverged = true;
+    this.stop();
+    this.seed();
+    this.api.notify(
+      'warning',
+      this.api.locale === 'zh-CN'
+        ? '流场数值发散 — 已自动重置。请降低入流速度或松弛率后重新开始'
+        : 'Flow diverged — reset automatically. Lower the inflow speed or relaxation rate, then restart',
+    );
   }
 
   /**
@@ -524,13 +627,14 @@ export class FluidPlugin implements Plugin {
 
       if (upload) fieldA.write(this.f);
       flagsBuf.write(this.flags);
-      paramsBuf.write(new Uint8Array(packFluidParams(this.cols, this.rows, this.state.omega, this.state.u0)));
+      paramsBuf.write(new Uint8Array(packFluidParams(this.cols, this.rows, this.state.omega, this.inflowU0)));
       const wgX = Math.ceil(this.cols / 8);
       const wgY = Math.ceil(this.rows / 8);
 
       for (let s = 0; s < steps; s += 1) {
         if (!gpu.run(collide, [fieldA, fieldB, flagsBuf, paramsBuf], wgX, wgY, 1)) return false;
         if (!gpu.run(stream, [fieldB, fieldA, flagsBuf, paramsBuf], wgX, wgY, 1)) return false;
+        this.stepsSinceSeed += 1;
         await onProgress?.({ done: s + 1, total: steps });
       }
 
@@ -561,6 +665,22 @@ export class FluidPlugin implements Plugin {
   }
 
   private lastCurl: Float32Array | null = null;
+  /** Reused macroscopic buffers — see `fluidMacroCPU`'s `out` parameter. */
+  private macroBuf: { rho: Float32Array; ux: Float32Array; uy: Float32Array } | null = null;
+
+  /** Macroscopic fields for the current population field, without allocating
+   *  three `cells`-sized arrays on every frame. */
+  private macro() {
+    const cells = this.cols * this.rows;
+    if (!this.macroBuf || this.macroBuf.rho.length !== cells) {
+      this.macroBuf = {
+        rho: new Float32Array(cells),
+        ux: new Float32Array(cells),
+        uy: new Float32Array(cells),
+      };
+    }
+    return fluidMacroCPU(this.f, this.cols, this.rows, this.macroBuf);
+  }
   /** Offscreen grid-resolution canvas, bilinearly upscaled when drawn. */
   private offscreen: HTMLCanvasElement | null = null;
 
@@ -720,7 +840,11 @@ export class FluidPlugin implements Plugin {
       if (this.flowCount !== Math.max(400, Math.floor((this.cols * this.rows) / 55))) {
         this.seedFlow();
       }
-      const macro = fluidMacroCPU(this.f, this.cols, this.rows);
+      let macro = this.macro();
+      if (this.hasDiverged(macro.rho, macro.ux, macro.uy)) {
+        this.recoverFromDivergence();
+        macro = this.macro();
+      }
       this.stepFlow(macro.ux, macro.uy);
       g.strokeStyle = 'rgba(120, 220, 255, 0.5)';
       g.lineWidth = 1;
@@ -753,7 +877,11 @@ export class FluidPlugin implements Plugin {
     if (!og) return;
     const img = og.createImageData(this.cols, this.rows);
 
-    const macro = fluidMacroCPU(this.f, this.cols, this.rows);
+    let macro = this.macro();
+    if (this.hasDiverged(macro.rho, macro.ux, macro.uy)) {
+      this.recoverFromDivergence();
+      macro = this.macro();
+    }
     const curl = this.lastCurl ?? fluidCurlCPU(macro.ux, macro.uy, this.cols, this.rows);
     let peak = 0;
     for (let i = 0; i < curl.length; i += 1) peak = Math.max(peak, Math.abs(curl[i]!));

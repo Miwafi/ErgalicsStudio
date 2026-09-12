@@ -9,6 +9,7 @@
 
 import type { RenderedView } from '@/types/datatable';
 import type { Plugin } from '@/types/plugin';
+import { emit } from '@/core/events';
 import type { VizPayload } from './catalog/visualize';
 
 export interface ViewRenderHost {
@@ -23,4 +24,7 @@ export async function renderView(view: RenderedView, host: ViewRenderHost): Prom
   if (!plugin?.loadData) return;
   const file = new File([payload.text], 'data.txt', { type: 'text/plain' });
   await plugin.loadData(file);
+  // The import may have changed the plugin's parameter set (new options,
+  // new bounds) — ask the panel to re-read the definitions.
+  emit(`plugin:${payload.pluginId}:defs`, undefined);
 }

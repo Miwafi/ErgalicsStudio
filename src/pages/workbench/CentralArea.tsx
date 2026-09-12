@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '@/i18n';
-import { usePluginStore, setHostContainers, rerenderActivePlugin, runTracked } from '@/stores/pluginStore';
+import { usePluginStore, setHostContainers, rerenderActivePlugin, runTracked, refreshParamDefs } from '@/stores/pluginStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useAppStore } from '@/stores/appStore';
 import { detectFormats, matchesFormats, collectSupportedExtensions, detectScientificFormat, scientificFormatFromName } from '@/core/fileFormat';
@@ -286,6 +286,9 @@ export function CentralArea() {
           await pluginStore2.registry.find((e) => e.id === id)?.plugin?.loadData?.(file);
         },
       );
+      // An import can change the parameter set itself (new select options,
+      // new slider bounds) — tell the panel to re-read the definitions.
+      refreshParamDefs(id);
     } catch (err) {
       logger.error('plugin', 'loadData failed', { id, file: file.name }, err);
       notify('error', t('plugin.load_failed'));

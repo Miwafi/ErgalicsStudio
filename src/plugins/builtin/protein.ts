@@ -41,6 +41,8 @@ export const proteinManifest: PluginManifest = {
 
 const MAX_PROTEINS = 2000;
 const CPU_PROTEIN_CAP = 1500;
+/** Slider granularity for the Proteins count (also its lower bound). */
+const PROTEIN_COUNT_STEP = 20;
 
 interface ProteinNode {
   id: string;
@@ -109,7 +111,10 @@ export class ProteinPlugin implements Plugin {
 
   updateParams(params: Record<string, unknown>) {
     if (typeof params.count === 'number' && params.count !== this.state.count) {
-      this.state.count = Math.max(20, Math.min(MAX_PROTEINS, Math.floor(params.count)));
+      this.state.count = Math.max(
+        PROTEIN_COUNT_STEP,
+        Math.min(this.countMax, Math.floor(params.count)),
+      );
       // The Proteins slider was previously a no-op: resample the loaded
       // network down to the requested size so the param actually does work.
       if (this.state.hasData) this.resampleTo(this.state.count);
@@ -130,9 +135,33 @@ export class ProteinPlugin implements Plugin {
     }
   }
 
+  /**
+   * Upper bound of the Proteins slider.
+   *
+   * Resampling can only draw from the loaded network, so a fixed
+   * `MAX_PROTEINS` ceiling let the slider travel past the end of the data —
+   * the request was clamped, `state.count` snapped back to the loaded size
+   * and the thumb jumped backwards, i.e. the slider could never be filled.
+   * Reported bounds now match what the resampler can actually deliver.
+   */
+  private get countMax(): number {
+    if (!this.state.hasData) return MAX_PROTEINS;
+    const step = PROTEIN_COUNT_STEP;
+    const n = this.rawNodes.length;
+    return Math.max(step, Math.min(MAX_PROTEINS, Math.ceil(n / step) * step));
+  }
+
   getParams(): ParamDefinition[] {
     return [
-      { key: 'count', label: 'Proteins', type: 'range', min: 20, max: MAX_PROTEINS, step: 20, value: this.state.count },
+      {
+        key: 'count',
+        label: 'Proteins',
+        type: 'range',
+        min: PROTEIN_COUNT_STEP,
+        max: this.countMax,
+        step: PROTEIN_COUNT_STEP,
+        value: this.state.count,
+      },
       { key: 'iterations', label: 'Iterations', type: 'range', min: 20, max: 1000, step: 20, value: this.state.iterations },
       { key: 'repulsion', label: 'Repulsion (k)', type: 'range', min: 0.03, max: 0.3, step: 0.005, value: this.state.repulsion },
       {
@@ -165,17 +194,27 @@ export class ProteinPlugin implements Plugin {
       this.api.notify('warning', this.api.locale === 'zh-CN' ? '无法解析网络文件' : 'Could not parse network file');
       return;
     }
+    // A new network invalidates a *running* layout: halt it first so the
+    // freshly imported network is not immediately relaxed by the still-running
+    // frame loop. The user restarts explicitly with Start.
+    if (this.state.running) this.stop();
     this.nodes = parsed.nodes;
     this.edges = parsed.edges;
     // Pristine copies for non-destructive resampling (layout mutates node
     // positions in place).
     this.rawNodes = parsed.nodes.map((n) => ({ ...n }));
     this.rawEdges = parsed.edges.slice();
-    this.state.count = this.nodes.length;
     this.state.hasData = true;
-    this.computeDegrees();
-    this.api.reportDataScale(this.nodes.length);
-    this.draw();
+    // Keep the working set inside the slider's ceiling so the reported
+    // count and the drawn network never disagree.
+    if (this.nodes.length > MAX_PROTEINS) {
+      this.resampleTo(MAX_PROTEINS);
+    } else {
+      this.state.count = Math.max(PROTEIN_COUNT_STEP, this.nodes.length);
+      this.computeDegrees();
+      this.api.reportDataScale(this.nodes.length);
+      this.draw();
+    }
   }
 
   /**
@@ -406,11 +445,25 @@ export class ProteinPlugin implements Plugin {
 
     const nodes: ProteinNode[] = [];
     const idToIndex = new Map<string, number>();
+    const total = Math.max(1, rawProteins.length);
     for (let i = 0; i < rawProteins.length; i += 1) {
       const p = rawProteins[i] as Record<string, unknown>;
       const id = String(p.id ?? p.name ?? i);
       idToIndex.set(id, i);
-      nodes.push({ id, name: String(p.name ?? id), x: 0, y: 0, degree: 0, module: 0 });
+      // Sunflower (Vogel) spiral start: every node gets a distinct position
+      // inside the unit disc. Starting them all at the origin made every
+      // pair take the de-collision branch on the first iterations and the
+      // network exploded outward instead of relaxing.
+      const angle = i * 2.399963229728653;
+      const radius = 0.9 * Math.sqrt((i + 0.5) / total);
+      nodes.push({
+        id,
+        name: String(p.name ?? id),
+        x: radius * Math.cos(angle),
+        y: radius * Math.sin(angle),
+        degree: 0,
+        module: 0,
+      });
     }
 
     const edges: ProteinEdge[] = [];

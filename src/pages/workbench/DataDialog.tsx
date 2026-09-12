@@ -16,7 +16,7 @@ import {
   exampleDescription,
 } from '@/core/examples';
 import { findBuiltin } from '@/plugins/builtin';
-import { usePluginStore } from '@/stores/pluginStore';
+import { usePluginStore, refreshParamDefs } from '@/stores/pluginStore';
 import { useAppStore } from '@/stores/appStore';
 import { BLOCK_GRAPH_CHANGED, useBlockStore } from '@/stores/blockStore';
 import { useEditorStore } from '@/stores/editorStore';
@@ -73,6 +73,10 @@ export function DataDialog({ open, onClose }: DataDialogProps) {
         .registry.find((e) => e.id === ex.pluginId)?.plugin;
       const content = ex.loadContent ? await ex.loadContent() : ex.content;
       await plugin?.loadData?.(exampleToFile(ex, content));
+      // The import stops any running simulation and may change the plugin's
+      // parameter set — tell the panel to re-read its definitions so the
+      // Start/Stop toggle reflects the halted run.
+      refreshParamDefs(ex.pluginId);
       notify('success', t('workbench.example_data.loaded'));
       onClose();
     } catch (err) {

@@ -151,6 +151,10 @@ export class ParticlePlugin implements Plugin {
     const text = await file.text();
     const rows = this.parseData(text);
     if (rows.length < 2) return;
+    // A new dataset invalidates a *running* simulation: halt it first so the
+    // freshly reset particles are not immediately integrated by the
+    // still-running frame loop. The user restarts explicitly with Run.
+    if (this.state.running) this.stop();
     this.raw = rows;
     this.state.count = Math.min(250000, Math.max(500, this.raw.length));
     this.state.hasData = true;
