@@ -28,10 +28,10 @@ export default defineConfig({
   },
   head: [
     ['meta', { name: 'theme-color', content: '#0d9488' }],
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo.svg` }],
+    ['link', { rel: 'icon', href: `${base}ico.ico` }],
   ],
   themeConfig: {
-    logo: '/logo.svg',
+    logo: '/ico.ico',
     nav: [
       { text: 'Guide', link: '/guide/introduction' },
       { text: 'Plugins', link: '/guide/plugins' },

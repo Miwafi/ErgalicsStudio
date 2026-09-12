@@ -263,6 +263,8 @@ export const enUS: LocaleDictionary = {
 
   'workbench.example.title': 'Samples',
   'workbench.example.datasets': 'Datasets',
+  'workbench.example.group_labs': 'Interactive physics & optics labs',
+  'workbench.example.group_datasets': 'General sample datasets',
   'workbench.example.pipelines': 'Flow pipelines',
   'workbench.example.blocks': 'Block samples',
   'workbench.example.code_samples': 'Code samples',

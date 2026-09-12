@@ -51,6 +51,21 @@
   font-size: var(--font-size-sm);
 }
 
+.brand-logo img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  user-select: none;
+  transition: transform 0.18s ease, filter 0.18s ease;
+}
+
+/* Floating shadow: lift + soft glow under the icon when hovering the brand */
+.brand:hover .brand-logo img,
+.brand-logo:hover img {
+  transform: translateY(-1px) scale(1.06);
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 6px var(--color-accent));
+}
+
 .brand-name {
   font-family: var(--font-mono);
   font-weight: 600;
@@ -1210,6 +1225,117 @@
   gap: var(--space-1);
   flex-wrap: wrap;
   margin-top: var(--space-2);
+}
+
+/* Labelled sections inside the "示例" dialog dataset tab. */
+.example-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.example-group + .example-group {
+  margin-top: var(--space-4);
+}
+
+.example-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.example-group-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text-primary);
+}
+
+.example-group-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 18px;
+}
+
+/* "示例" dialog datasets tab: left type selector + right example list. */
+.example-layout {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+  min-height: 320px;
+}
+
+.example-cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  width: 150px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.example-cat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.example-cat:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.example-cat.is-active {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
+  font-weight: 600;
+}
+
+.example-cat-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.example-cat-count {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 18px;
+}
+
+.example-cat.is-active .example-cat-count {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text);
+}
+
+.example-list-pane {
+  flex: 1;
+  min-width: 0;
+  max-height: 340px;
 }
 
 .tag-primary {

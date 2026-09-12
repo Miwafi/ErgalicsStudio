@@ -38,6 +38,13 @@ import waveTwinJson from '../../examples/data/wave-twin.json?raw';
 import waveSlitJson from '../../examples/data/wave-slit.json?raw';
 import pendulumChaosJson from '../../examples/data/pendulum-chaos.json?raw';
 import pendulumFlipJson from '../../examples/data/pendulum-flip.json?raw';
+import electromagCyclotronJson from '../../examples/data/electromag-cyclotron.json?raw';
+import electromagQuadrupoleJson from '../../examples/data/electromag-quadrupole.json?raw';
+import opticsConvexJson from '../../examples/data/optics-convex-imaging.json?raw';
+import opticsConcaveJson from '../../examples/data/optics-concave-diverging.json?raw';
+import opticsPrismJson from '../../examples/data/optics-prism-dispersion.json?raw';
+import structureTrussJson from '../../examples/data/structure-truss-bridge.json?raw';
+import structureRopeJson from '../../examples/data/structure-rope-bridge.json?raw';
 import { TEST_PATTERN_PNG_BASE64 } from './exampleAssets';
 
 // AI Training samples (linear / nonlinear / logistic / MNIST) live under
@@ -59,12 +66,21 @@ function aiExampleContent(name: string): Promise<string> {
   return hit[1]();
 }
 
+/**
+ * Optional grouping key for a built-in sample. Groups are rendered as their
+ * own labelled section at the top of the "示例" dialog's dataset tab, ahead of
+ * the general-purpose datasets, so flagship labs stay easy to find.
+ */
+export type ExampleGroup = 'lab';
+
 export interface BuiltinExample {
   id: string;
   filename: string;
   format: string;
   mimeType: string;
   pluginId: string;
+  /** Optional section this sample belongs to. Omit for general datasets. */
+  group?: ExampleGroup;
   /** Text content for raw (text) assets. */
   content?: string;
   /** Base64 content for binary assets. */
@@ -591,6 +607,129 @@ export const BUILTIN_EXAMPLES: BuiltinExample[] = [
     },
   },
 
+  // ---- Interactive physics / optics labs --------------------------------
+  {
+    id: 'electromag-cyclotron',
+    filename: 'electromag-cyclotron.json',
+    format: 'json',
+    mimeType: 'application/json',
+    pluginId: 'example.electromag',
+    group: 'lab',
+    content: electromagCyclotronJson,
+    nameI18n: {
+      'zh-CN': '电磁场 · 磁场中的回旋运动',
+      'en-US': 'EM · Cyclotron in a B Field',
+    },
+    descriptionI18n: {
+      'zh-CN':
+        '均匀磁场 B=1.8 中三个同号电荷同时射入：洛伦兹力把它们偏成圆弧，而彼此的库仑斥力让轨迹明显相互推开——一张图同时看到两种力的作用。',
+      'en-US':
+        'Three like charges enter a uniform B = 1.8 field together: the Lorentz force bends them into arcs while Coulomb repulsion visibly drives their paths apart — both forces in one view.',
+    },
+  },
+  {
+    id: 'electromag-quadrupole',
+    filename: 'electromag-quadrupole.json',
+    format: 'json',
+    mimeType: 'application/json',
+    pluginId: 'example.electromag',
+    group: 'lab',
+    content: electromagQuadrupoleJson,
+    nameI18n: {
+      'zh-CN': '电磁场 · 四极静电场',
+      'en-US': 'EM · Quadrupole Field',
+    },
+    descriptionI18n: {
+      'zh-CN': '两个正电荷与两个负电荷构成的四极场（无磁场），松手后观察库仑力下的振荡与逃逸，可用于演示离子阱原理。',
+      'en-US': 'Two positive and two negative charges form a quadrupole (no B field); release them to watch Coulomb oscillation and escape.',
+    },
+  },
+  {
+    id: 'optics-convex-imaging',
+    filename: 'optics-convex-imaging.json',
+    format: 'json',
+    mimeType: 'application/json',
+    pluginId: 'example.optics',
+    group: 'lab',
+    content: opticsConvexJson,
+    nameI18n: {
+      'zh-CN': '光学 · 凸透镜成像',
+      'en-US': 'Optics · Convex Lens Imaging',
+    },
+    descriptionI18n: {
+      'zh-CN': '点光源在凸透镜前 2f 位置（f=120px），光线经薄透镜汇聚，光屏恰好落在成像面上，可直接拖动透镜/光屏观察像距变化。',
+      'en-US': 'A point source sits 2f in front of a convex lens (f = 120 px); rays converge and the screen sits exactly on the image plane. Drag the lens or screen to change it.',
+    },
+  },
+  {
+    id: 'optics-prism-dispersion',
+    filename: 'optics-prism-dispersion.json',
+    format: 'json',
+    mimeType: 'application/json',
+    pluginId: 'example.optics',
+    group: 'lab',
+    content: opticsPrismJson,
+    nameI18n: {
+      'zh-CN': '光学 · 三棱镜色散',
+      'en-US': 'Optics · Prism Dispersion',
+    },
+    descriptionI18n: {
+      'zh-CN': '白光射入等边三棱镜，前后两个面按斯涅尔定律折射，折射率随波长变化，光屏上散开成彩色光谱。',
+      'en-US': 'White light enters an equilateral prism and refracts twice via Snell\'s law with a wavelength-dependent index, fanning into a spectrum on the screen.',
+    },
+  },
+  {
+    id: 'optics-concave-diverging',
+    filename: 'optics-concave-diverging.json',
+    format: 'json',
+    mimeType: 'application/json',
+    pluginId: 'example.optics',
+    group: 'lab',
+    content: opticsConcaveJson,
+    nameI18n: {
+      'zh-CN': '光学 · 凹透镜发散',
+      'en-US': 'Optics · Concave Lens Diverging',
+    },
+    descriptionI18n: {
+      'zh-CN': '凹透镜（f<0）使平行/发散光束更加发散，虚焦点位于透镜前方，可与凸透镜成像对比。',
+      'en-US': 'A concave lens (f < 0) spreads the beam further; the virtual focus lies in front of the lens — compare with the convex case.',
+    },
+  },
+  {
+    id: 'structure-truss-bridge',
+    filename: 'structure-truss-bridge.json',
+    format: 'json',
+    mimeType: 'application/json',
+    pluginId: 'example.structure',
+    group: 'lab',
+    content: structureTrussJson,
+    nameI18n: {
+      'zh-CN': '结构 · 钢桁架桥承重',
+      'en-US': 'Structure · Steel Truss Bridge',
+    },
+    descriptionI18n: {
+      'zh-CN': '13 根钢杆件组成的下承式桁架桥，两个重物从空中落下加载。点击「运行」开始，杆件颜色随轴力由材料色变红，超限即断裂并发生垮塌；可调重力与负载质量加重加载。',
+      'en-US': 'A 13-member steel truss bridge with two weights dropped on it. Press Run; members turn red as their axial force approaches the limit, overload snaps them and the bridge collapses. Raise gravity or the load mass to push it further.',
+    },
+  },
+  {
+    id: 'structure-rope-bridge',
+    filename: 'structure-rope-bridge.json',
+    format: 'json',
+    mimeType: 'application/json',
+    pluginId: 'example.structure',
+    group: 'lab',
+    content: structureRopeJson,
+    nameI18n: {
+      'zh-CN': '结构 · 缆索吊桥（只受拉）',
+      'en-US': 'Structure · Rope Bridge (tension-only)',
+    },
+    descriptionI18n: {
+      'zh-CN': '缆索只能承受拉力（受压时以松弛虚线显示），重物从上方落下后悬链下垂。点击「运行」开始，可调重力与负载质量观察下垂与断裂。',
+      'en-US': 'Rope cannot push — slack members are drawn dashed. A weight drops onto the deck and the catenary sags. Press Run; raise gravity or the load mass to watch it sag and snap.',
+    },
+  },
+
   // ---- AI Training samples (served from examples/data/ai/) --------------
   {
     id: 'ai-linear',
@@ -650,9 +789,33 @@ export const BUILTIN_EXAMPLES: BuiltinExample[] = [
 export function exampleName(ex: BuiltinExample, locale: Locale): string {
   return ex.nameI18n[locale] ?? ex.filename;
 }
-
 export function exampleDescription(ex: BuiltinExample, locale: Locale): string {
   return ex.descriptionI18n[locale] ?? '';
+}
+
+/**
+ * Split the sample list into the labelled group sections shown first in the
+ * "示例" dialog, plus everything else. Keeps authoring order inside each part.
+ */
+export function groupExamples(list: BuiltinExample[]): {
+  groups: { key: ExampleGroup; items: BuiltinExample[] }[];
+  rest: BuiltinExample[];
+} {
+  const groups: { key: ExampleGroup; items: BuiltinExample[] }[] = [];
+  const rest: BuiltinExample[] = [];
+  for (const ex of list) {
+    if (!ex.group) {
+      rest.push(ex);
+      continue;
+    }
+    let bucket = groups.find((g) => g.key === ex.group);
+    if (!bucket) {
+      bucket = { key: ex.group, items: [] };
+      groups.push(bucket);
+    }
+    bucket.items.push(ex);
+  }
+  return { groups, rest };
 }
 
 /** Wrap sample content into a real File so plugins load it like user data. */

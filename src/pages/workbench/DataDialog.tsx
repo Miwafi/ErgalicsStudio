@@ -6,7 +6,7 @@
 // own dedicated manager (ProjectFilesDialog) and no longer live here.
 // ==========================================================================
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useT, useLocale } from '@/i18n';
 import { Modal } from '@/components/Modal';
 import {
@@ -14,8 +14,10 @@ import {
   exampleToFile,
   exampleName,
   exampleDescription,
+  type BuiltinExample,
 } from '@/core/examples';
 import { findBuiltin } from '@/plugins/builtin';
+import { PLUGIN_DISCIPLINES, disciplineOf } from '@/plugins/categories';
 import { usePluginStore, refreshParamDefs } from '@/stores/pluginStore';
 import { useAppStore } from '@/stores/appStore';
 import { BLOCK_GRAPH_CHANGED, useBlockStore } from '@/stores/blockStore';
@@ -40,6 +42,16 @@ interface DataDialogProps {
   open: boolean;
   onClose: () => void;
 }
+
+// Example categories for the datasets tab's left-hand type selector.
+// Interactive-lab samples (electromagnetism / optics / structure) get their
+// own pinned category at the top; everything else follows the plugin
+// discipline taxonomy (physics / charts / stats / geo / data / fun) so the
+// dialog's grouping matches the sidebar's plugin groups.
+const EXAMPLE_CATS: { id: string; nameI18n: Record<string, string> }[] = [
+  { id: 'lab', nameI18n: { 'zh-CN': '交互实验', 'en-US': 'Interactive Labs' } },
+  ...PLUGIN_DISCIPLINES,
+];
 
 export function DataDialog({ open, onClose }: DataDialogProps) {
   const t = useT();
@@ -132,12 +144,51 @@ export function DataDialog({ open, onClose }: DataDialogProps) {
     onClose();
   };
 
+  // Bucket the samples into the left-nav categories above. Empty categories
+  // are dropped, and the selection defaults to the first visible one.
+  const { exampleCats, catMap, firstCat } = useMemo(() => {
+    const map: Record<string, BuiltinExample[]> = {};
+    for (const ex of BUILTIN_EXAMPLES) {
+      const cat = ex.group === 'lab' ? 'lab' : disciplineOf(ex.pluginId);
+      (map[cat] ??= []).push(ex);
+    }
+    const visible = EXAMPLE_CATS.filter((c) => (map[c.id]?.length ?? 0) > 0);
+    return { exampleCats: visible, catMap: map, firstCat: visible[0]?.id ?? '' };
+  }, []);
+  const [activeCat, setActiveCat] = useState<string>(firstCat);
+
+  const renderExampleCard = (ex: BuiltinExample) => (
+    <div key={ex.id} className="plugin-card">
+      <div className="plugin-card-main">
+        <span className="plugin-icon">{ex.group === 'lab' ? '✦' : '▦'}</span>
+        <div className="plugin-card-info">
+          <div className="plugin-card-title">{exampleName(ex, locale)}</div>
+          <div className="plugin-card-meta">{exampleDescription(ex, locale)}</div>
+          <div className="example-data-tags">
+            <span className="tag tag-muted">{ex.filename}</span>
+            <span className="tag tag-primary">{ex.format}</span>
+            <span className="tag tag-muted">{ex.pluginId}</span>
+          </div>
+        </div>
+      </div>
+      <div className="plugin-card-actions">
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={() => void loadExample(ex.id)}
+        >
+          {t('workbench.example_data.load')}
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title={t('workbench.example.title')}
-      width={640}
+      width={760}
       footer={
         <button type="button" className="btn" onClick={onClose}>
           {t('common.close')}
@@ -177,32 +228,28 @@ export function DataDialog({ open, onClose }: DataDialogProps) {
         </div>
 
         {tab === 'datasets' ? (
-          <div className="plugin-list-pane">
-            {BUILTIN_EXAMPLES.map((ex) => (
-              <div key={ex.id} className="plugin-card">
-                <div className="plugin-card-main">
-                  <span className="plugin-icon">▦</span>
-                  <div className="plugin-card-info">
-                    <div className="plugin-card-title">{exampleName(ex, locale)}</div>
-                    <div className="plugin-card-meta">{exampleDescription(ex, locale)}</div>
-                    <div className="example-data-tags">
-                      <span className="tag tag-muted">{ex.filename}</span>
-                      <span className="tag tag-primary">{ex.format}</span>
-                      <span className="tag tag-muted">{ex.pluginId}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="plugin-card-actions">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-primary"
-                    onClick={() => void loadExample(ex.id)}
-                  >
-                    {t('workbench.example_data.load')}
-                  </button>
-                </div>
-              </div>
-            ))}
+          <div className="example-layout">
+            <div className="example-cat-list">
+              {exampleCats.map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  className={`example-cat${activeCat === cat.id ? ' is-active' : ''}`}
+                  onClick={() => setActiveCat(cat.id)}
+                >
+                  <span className="example-cat-name">
+                    {cat.nameI18n[locale] ?? cat.nameI18n['en-US']}
+                  </span>
+                  <span className="example-cat-count">{catMap[cat.id]?.length ?? 0}</span>
+                </button>
+              ))}
+            </div>
+            <div className="plugin-list-pane example-list-pane">
+              {(catMap[activeCat] ?? []).map(renderExampleCard)}
+              {(catMap[activeCat] ?? []).length === 0 && (
+                <div className="empty-hint">{t('workbench.plugin.none')}</div>
+              )}
+            </div>
           </div>
         ) : tab === 'pipeline' ? (
           <div className="plugin-list-pane">
