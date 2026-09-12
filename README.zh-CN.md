@@ -62,7 +62,7 @@ Ergalics Studio 是一款完全运行于浏览器中的专业科学计算工作�
 
 Ergalics Studio 处于**积极开发**中，且已可端到端使用：核心闭环（项目管理、数据加载、插件注册、2D/3D 渲染、i18n、主题、性能监控、流程模式、积木模式，以及搭载 Pyodide Python 运行时的代码模式）均已可用并由测试覆盖。GPU 加速覆盖 Particles、N-Body、流体（LBM）、波动方程、直方图、热力图与点云内核；插件市场的包签名与 R 运行时（webR）是接下来的里程碑。每个模块都刻意保持小巧且可测试，使代码库能持续扩展而无需重写。
 
-> 状态：**积极开发**——今日即可使用，具备四种工作台模式、37 个内置插件（核心 + 趣味）、沙箱化插件系统、市场目录、实时 GPU 计算、浏览器内 AI 训练插件，以及基于 Pyodide 的 Python 代码编辑器；包签名与 R 运行时为后续工作。
+> 状态：**积极开发**——今日即可使用，具备四种工作台模式、40 个内置插件（30 核心 + 10 趣味）、沙箱化插件系统、市场目录、实时 GPU 计算、浏览器内 AI 训练插件、统计分析子系统、科研二进制数据导入（HDF5 / NetCDF / FITS / Zarr / Parquet）、出版级 SVG/PDF 绘图引擎、可复现性支持，以及基于 Pyodide 的 Python 代码编辑器；包签名与 R 运行时为后续工作。
 
 ---
 
@@ -81,7 +81,7 @@ Ergalics Studio 处于**积极开发**中，且已可端到端使用：核心闭
 
 **插件系统**
 
-- **37 个内置插件**——27 个核心/科学插件外加 10 个趣味与工具玩具——覆盖完整 API 面（2D canvas、Three.js 场景、WGSL 计算、按钮/开关、沙箱、浏览器内模型训练）。
+- **40 个内置插件**——30 个核心/科学插件外加 10 个趣味与工具玩具——覆盖完整 API 面（2D canvas、Three.js 场景、WGSL 计算、按钮/开关、沙箱、浏览器内模型训练）。
 - **两级加载**：核心插件在启动时自动加载；趣味/工具插件声明 `autoload: false`，按需从内置面板或市场标签页加载，保持启动注册表精简。
 - **市场目录**（`src/plugins/marketplace.ts`）——每个内置插件均附带精选标签、流行度与分类筛选（科学 / 趣味 / 工具）；社区"敬请期待"提交作为占位符列出。
 - `.cspkg` 包加载（含 `manifest.json` + 入口 + 资源的 ZIP），并带有清单校验（id 格式、入口路径穿越防护、沙箱枚举）。
@@ -95,10 +95,18 @@ Ergalics Studio 处于**积极开发**中，且已可端到端使用：核心闭
 - 性能监控：FPS、帧时间、GPU 时间、内存、数据规模，并带有告警阈值（§7.3）。
 - 错误边界、回退方案，以及横幅/通知系统。
 
+**科学计算子系统（纯 TypeScript，含单元测试）**
+
+- **统计内核**（`src/core/stats/`）——描述统计、特殊函数（不完全伽马/贝塔、逆 CDF）、假设检验（单/双样本与配对 t 检验、单因素方差分析、Mann–Whitney U、卡方独立性检验）、效应量（Cohen's d、Pearson/Spearman 相关）、多重比较校正（Bonferroni、Benjamini–Hochberg）与双样本功效分析。
+- **科研二进制 I/O**（`src/core/io/`）——单一调度器将拖入的文件路由到 HDF5（h5wasm）、NetCDF（netcdfjs）、FITS（fitsjs）、Parquet（parquet-wasm）与 Zarr（zarrita）加载器，把每个变量/数据集/HDU 转为项目数据文件。
+- **出版级绘图引擎**（`src/core/plot/`）——纯 TS 的 SVG 渲染器，带线性/对数/时间刻度与优雅刻度值，支持折线、散点、直方图与柱状图的 SVG 及 PDF 导出。
+- **可复现性内核**（`src/core/repro/`）——带种子的随机数（mulberry32）、稳定哈希、运行清单（种子 + 版本 + 输入哈希 + 图哈希）以及 DAG 转 Python 导出以便重跑。
+- **运行日志导出**（`src/core/logger.ts` + `download.ts`）——工作台支持导出会话日志用于问题反馈。
+
 **流程模式（可视化数据流管线）**
 
 - 标准模式之外的第二个工作台模式——通过顶栏的 `Standard | Flow` 开关切换。标准模式是*加载数据 → 可见*；流程模式是*组合可视化管线 → 运行 → 查看每个节点的输出*。
-- 按类别组织的 23 个内置区块：数据源、变换、过滤器、数学、统计与可视化。控制流区块（if/else、repeat、parallel）被刻意推迟——`BlockInstance` 上的 `region` 接缝已就位，以便后续作为扩展嵌入而非重构。
+- 按类别组织的 37 个内置区块：数据源、变换、过滤器、数学、统计（含 t 检验、方差分析、Mann–Whitney、卡方检验、相关分析、效应量与多重比较校正）、绘图与可视化。控制流区块（if/else、repeat、parallel）被刻意推迟——`BlockInstance` 上的 `region` 接缝已就位，以便后续作为扩展嵌入而非重构。
 - **编译器是纯函数**：结构校验（端口 / 必需输入 / 类型兼容）、环检测，以及 Kahn 式拓扑排序。错误以结构化 `diagnostics` 返回，使画布可绘制红色边和内联诊断条而无需抛出异常。
 - **带增量缓存的执行器**，粒度到单个节点，外加脏值传播失效遍历——修改单个区块的参数，仅该区块及其下游重新执行。
 - **一键结果预览**：`RenderedView` 输出经由现有插件渲染器（散点图、直方图……）；`DataTable` 输出渲染为只读表格（使 `stats.summary` / `stats.histogram` 的分箱切实可见）；`Scalar` 输出内联渲染。当管线有多个输出时，通过芯片切换器选择要检视的节点。
@@ -150,7 +158,7 @@ flowchart TB
     end
 
     subgraph Runtime["运行时层"]
-        C1["插件运行时<br/>builtin/* (27 核心 + 10 趣味)<br/>市场目录<br/>cspkg 加载器 (沙箱)<br/>注册表与生命周期"]
+        C1["插件运行时<br/>builtin/* (30 核心 + 10 趣味)<br/>市场目录<br/>cspkg 加载器 (沙箱)<br/>注册表与生命周期"]
         C2["原生核心 (Rust→WASM)<br/>设备管理 · 计算<br/>内核调度<br/>文件类型检测"]
     end
 
@@ -238,7 +246,10 @@ cd docs && npm install && npm run dev
 .
 ├── src/                      # 前端
 │   ├── core/                 #   服务: storage, events, i18n, gpu, wasm,
-│   │                         #   fileFormat, scene3d, sandbox, cspkg, …
+│   │                         #   fileFormat, scene3d, sandbox, cspkg,
+│   │                         #   stats (统计内核), io (HDF5/NetCDF/FITS/
+│   │                         #   Zarr/Parquet), plot (SVG/PDF 引擎),
+│   │                         #   repro (可复现性), logger, …
 │   ├── blocks/               #   区块系统 (流程模式):
 │   │                         #     types · registry · compiler · executor ·
 │   │                         #     ops · catalog · sample · l10n · render
@@ -325,7 +336,7 @@ cd docs && npm install && npm run dev
 
 与积木模式共享的 IR（`src/editor/ir/`）、IR 解释器以及 IR → JS / Python 代码生成在此处全部复用，使积木与代码模式在相同的数据语义上保持一致。
 
-**三模式互转**——共享的 IR 是三种编辑模式的唯一中枢：`src/editor/flow/convert.ts` 负责 IR ↔ 流程 DAG 的往返（`irToFlow` / `flowToIR`），`src/editor/block/convert.ts` 负责 Blockly JSON ↔ IR 的往返（`blockJSONToIR` / `irToBlockJSON`）。在流程模式中编辑一条管线，切换到积木即可看到同一逻辑以 Scratch 积木呈现，再跳转到代码模式即可看到生成的 Python——全部由同一份 IR 驱动。一个专门的 `sync-threeway` 单元测试为双向往返兜底。
+**三模式互转**——共享的 IR 是三种编辑模式的唯一中枢：`src/editor/flow/convert.ts` 负责 IR ↔ 流程 DAG 的往返（`irToFlow` / `flowToIR`），`src/editor/block/convert.ts` 负责 Blockly JSON ↔ IR 的往返（`blockJSONToIR` / `irToBlockJSON`）；`src/editor/code/parse.ts` 还能把代码模式缓冲区中的 `studio.*` 调用解析回 IR（`parseCodeToIR`，无法解析的行以原始代码节点保留）。在流程模式中编辑一条管线，切换到积木即可看到同一逻辑以 Scratch 积木呈现，再跳转到代码模式即可看到生成的 Python——全部由同一份 IR 驱动。一个专门的 `sync-threeway` 单元测试为双向往返兜底。
 
 架构详见 [`docs/guide/block-mode.md`](docs/guide/block-mode.md)；R via webR 是剩余的运行时。
 
@@ -335,7 +346,7 @@ cd docs && npm install && npm run dev
 
 ### 内置插件
 
-**核心 / 科学插件**（启动时自动加载，共 27 个）：
+**核心 / 科学插件**（启动时自动加载，共 30 个）：
 
 | 插件                | 数据                        | 能力                      |
 | ------------------- | --------------------------- | ------------------------- |
@@ -366,6 +377,9 @@ cd docs && npm install && npm run dev
 | Wave Equation（波动方程）| `.json` (u / drive 网格) | 二维波动方程有限差分（高斯脉冲 / 双源干涉 / 双缝衍射场景）；WGSL leapfrog 内核 |
 | Double Pendulum（双摆）| `.json` (初始条件)        | RK4 积分 + 初值仅差 0.001 rad 的混沌幽灵摆——敏感依赖的直观展示 |
 | GeoJSON Map（地图） | `.geojson`, `.json`         | 离线矢量地图 + 分级设色（choropleth）；Albers（中国）/ Web 墨卡托 / 等距圆柱投影 |
+| 电磁场（Electromagnetism） | `.json`（电荷 / 场）  | 可拖动电荷在库仑力与均匀磁场洛伦兹力共同作用下运动；回旋加速器螺线 |
+| 光学实验（Optics Lab） | `.json`（光学布局）       | 几何光学光线追踪：薄透镜、斯涅尔折射 + 色散三棱镜、可拖动光屏 |
+| 结构力学（Structure） | `.json`（桁架杆件）        | 铰接桁架：按轴力着色、利用率读数、超载断裂垮塌 |
 
 模拟类插件严格数据驱动：初始为空，绝不伪造默认场景——流体障碍物、波动场景、
 双摆初始条件均来自内置示例或用户文件，**重置**仅重放已加载的数据。
@@ -493,7 +507,7 @@ npm test          # 或 npm run test:unit
 npm run verify    # 类型检查 + 单元测试
 ```
 
-285 个测试横跨 31 个套件：文件格式检测、cspkg 解析/校验、沙箱 RPC（含一次穿越 fake Worker 的端到端往返）、i18n、app store、WASM 重试策略、GPU 计算（WGSL 模板——粒子、N-Body、直方图、热力图、点云——缓冲打包、CPU 积分器、服务门控）、内置插件逻辑、数据插件的解析辅助（误差带行、矩形树层级、QQ probit）、区块系统端到端——`DataTable` ops、注册表、编译器（校验/拓扑/类型检查）、执行器（增量缓存 + 失效）、几何、目录执行器、`viz.*` → 插件渲染桥接、代码生成（JS/Python）、三模式 IR 同步（积木 ↔ 流程 ↔ 代码）、Pyodide worker 协议，以及通过 `import.meta.glob` 加载的管线示例。
+417 个测试分布在 46 个测试文件中：文件格式检测、科研二进制 I/O（NetCDF/HDF5/FITS/Parquet/Zarr 辅助）、统计内核（描述统计、特殊函数、假设检验、效应量、校正、功效）、cspkg 解析/校验、沙箱 RPC（含一次穿越 fake Worker 的端到端往返）、i18n、app store、WASM 重试策略、GPU 计算（WGSL 模板——粒子、N-Body、直方图、热力图、点云——缓冲打包、CPU 积分器、服务门控）、内置插件逻辑、数据插件的解析辅助（误差带行、矩形树层级、QQ probit）、区块系统端到端——`DataTable` ops、注册表、编译器（校验/拓扑/类型检查）、执行器（增量缓存 + 失效）、几何、目录执行器、`viz.*` → 插件渲染桥接、代码生成（JS/Python）、三模式 IR 同步（积木 ↔ 流程 ↔ 代码）、Pyodide worker 协议、结构力学模拟器、插件运行时生命周期与近期缺陷回归、出版级绘图引擎、可复现性内核，以及通过 `import.meta.glob` 加载的管线示例。
 
 针对生产预览的 E2E 套件（Playwright-core, headless Edge）：
 
@@ -536,11 +550,11 @@ npm run build     # 静态站点 → docs/.vitepress/dist
 当前状态表见 [`docs/guide/roadmap.md`](docs/guide/roadmap.md)。要点：
 
 - [x] 工作台布局、项目管理、文件路由
-- [x] 37 个内置插件（27 核心 + 10 趣味/工具）、cspkg 加载、Worker 沙箱
+- [x] 40 个内置插件（30 核心 + 10 趣味/工具）、cspkg 加载、Worker 沙箱
 - [x] 插件市场目录（精选标签 / 流行度 / 分类筛选，按需加载）
 - [x] WebGPU 设备管理 + 真实计算内核管线
 - [x] i18n、主题、性能监控、分享链接
-- [x] 流程模式——可视化数据流管线（编译器 + 增量执行器 + 23 个内置区块 + 画布 UI + `examples/projects/` 中的示例管线）
+- [x] 流程模式——可视化数据流管线（编译器 + 增量执行器 + 37 个内置区块 + 画布 UI + `examples/projects/` 中的示例管线）
 - [x] Vitest 单元测试 + Playwright E2E 套件
 - [x] 插件计算面（`api.gpu`）、WGSL 模板、Particles 加速
 - [x] 所有示例插件的 GPU 加速（直方图/热力图/点云）
@@ -548,7 +562,10 @@ npm run build     # 静态站点 → docs/.vitepress/dist
 - [x] GitHub Actions CI（单元 + E2E + Pages 部署）
 - [x] 积木模式（类 Scratch，Google Blockly）——见 [积木模式](docs/guide/block-mode.md)。30+ 内置区块、与解释器共享的 IR、懒加载的 Blockly 13 及 5 个示例程序；位于顶栏 `Blocks` 槽位之后。
 - [x] 代码模式（经 Pyodide 的 Python）——Monaco 编辑器、带可导入 `studio` 模块的 CPython worker 运行时、REPL + 变量、worker 中断，以及 `examples/code/` 下 9 个示例程序；与积木模式共享同一 IR。
-- [x] 三模式互转——积木 ↔ 流程 ↔ 代码经由共享 IR 往返（`src/editor/flow/convert.ts` + `src/editor/block/convert.ts`），由 `sync-threeway` 单元测试兜底
+- [x] 三模式互转——积木 ↔ 流程 ↔ 代码经由共享 IR 往返（`src/editor/flow/convert.ts` + `src/editor/block/convert.ts`），由 `sync-threeway` 单元测试兜底；代码模式缓冲区可经 `src/editor/code/parse.ts` 解析回 IR
+- [x] 统计分析子系统——假设检验、效应量、多重比较校正、功效分析（`src/core/stats/`），以 11 个流程模式 `stats.*` 区块呈现
+- [x] 科研二进制数据导入——经单一调度器支持 HDF5 / NetCDF / FITS / Zarr / Parquet（`src/core/io/`）
+- [x] 出版级绘图引擎（SVG/PDF 导出）与可复现性内核（`src/core/plot/`、`src/core/repro/`）
 - [ ] 代码模式：R 运行时（webR）
 
 ---

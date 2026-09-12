@@ -83,10 +83,12 @@ deliberately small and testable so the codebase keeps scaling without a
 rewrite.
 
 > Status: **Active development** — usable today with four workbench modes,
-> 37 built-in plugins (core + fun), a sandboxed plugin system, a marketplace
-> catalog, live GPU compute, an in-browser AI training plugin, and a
-> Pyodide-powered Python code editor; package signing and the R runtime are
-> next.
+> 40 built-in plugins (30 core + 10 fun), a sandboxed plugin system, a
+> marketplace catalog, live GPU compute, an in-browser AI training plugin,
+> a statistics subsystem, scientific binary I/O (HDF5 / NetCDF / FITS /
+> Zarr / Parquet), a publication-grade SVG/PDF plot engine, reproducibility
+> support, and a Pyodide-powered Python code editor; package signing and
+> the R runtime are next.
 
 ---
 
@@ -118,7 +120,7 @@ rewrite.
 
 **Plugin system**
 
-- **37 built-in plugins** — 27 core/scientific plugins plus 10 fun &
+- **40 built-in plugins** — 30 core/scientific plugins plus 10 fun &
   utility toys — covering the full API surface (2D canvas, Three.js scene,
   WGSL compute, buttons/toggles, sandboxing, in-browser model training).
 - **Two-tier loading**: core plugins are auto-loaded at startup; fun/utility
@@ -146,15 +148,39 @@ rewrite.
   warning thresholds (§7.3).
 - Error boundaries, fallbacks, and a banner/notification system.
 
+**Scientific computing subsystems (pure TypeScript, unit-tested)**
+
+- **Statistics kernel** (`src/core/stats/`) — descriptive statistics,
+  special functions (incomplete gamma/beta, inverse CDFs), hypothesis
+  tests (one/two-sample & paired t-tests, one-way ANOVA, Mann–Whitney U,
+  chi-square independence), effect sizes (Cohen's d, Pearson/Spearman
+  correlation), multiple-comparison corrections (Bonferroni,
+  Benjamini–Hochberg) and two-sample power analysis.
+- **Scientific binary I/O** (`src/core/io/`) — a single dispatcher routes
+  dropped files to loaders for HDF5 (h5wasm), NetCDF (netcdfjs), FITS
+  (fitsjs), Parquet (parquet-wasm) and Zarr (zarrita), turning each
+  variable/dataset/HDU into project data files.
+- **Publication-grade plot engine** (`src/core/plot/`) — a pure-TS
+  SVG renderer with linear/log/temporal scales and nice ticks, plus
+  SVG and PDF export for line, scatter, histogram and bar charts.
+- **Reproducibility kernel** (`src/core/repro/`) — seeded RNG
+  (mulberry32), stable hashing, run manifests (seed + version + input
+  hashes + graph hash) and DAG-to-Python export for reruns.
+- **Run-log export** (`src/core/logger.ts` + `download.ts`) — session
+  logs can be exported from the workbench for bug reports.
+
 **Flow mode (visual dataflow pipeline)**
 
 - A second workbench mode next to Standard — toggle with the `Standard | Flow`
   switch in the top bar. Standard mode is *load data → see it*; Flow mode is
   *compose a visual pipeline → run it → see every node's output*.
-- 23 built-in blocks organised by category: data sources, transforms, filters,
-  math, statistics, and visualizations. Control-flow blocks (if/else, repeat,
-  parallel) are deliberately deferred — the `region` seam on `BlockInstance`
-  is in place so they slot in later as an extension, not a refactor.
+- 37 built-in blocks organised by category: data sources, transforms,
+  filters, math, statistics (including t-tests, ANOVA, Mann–Whitney,
+  chi-square, correlation, effect sizes and multiple-comparison
+  corrections), plotting and visualizations. Control-flow blocks
+  (if/else, repeat, parallel) are deliberately deferred — the `region`
+  seam on `BlockInstance` is in place so they slot in later as an
+  extension, not a refactor.
 - **Compiler is a pure function**: structural validation (ports / required
   inputs / type compatibility), cycle detection, and Kahn-style topological
   sort. Errors come back as structured `diagnostics` so the canvas can paint
@@ -263,7 +289,7 @@ flowchart TB
     end
 
     subgraph Runtime["Runtime Layer"]
-        C1["Plugin runtime<br/>builtin/* (27 core + 10 fun)<br/>marketplace catalog<br/>cspkg loader (sandbox)<br/>registry & lifecycle"]
+        C1["Plugin runtime<br/>builtin/* (30 core + 10 fun)<br/>marketplace catalog<br/>cspkg loader (sandbox)<br/>registry & lifecycle"]
         C2["Native core (Rust→WASM)<br/>device mgmt · compute<br/>kernel scheduling<br/>file-kind detection"]
     end
 
@@ -362,7 +388,10 @@ See [Documentation](#documentation) for details.
 .
 ├── src/                      # Frontend
 │   ├── core/                 #   services: storage, events, i18n, gpu, wasm,
-│   │                         #   fileFormat, scene3d, sandbox, cspkg, …
+│   │                         #   fileFormat, scene3d, sandbox, cspkg,
+│   │                         #   stats (statistics kernel), io (HDF5/NetCDF/
+│   │                         #   FITS/Zarr/Parquet), plot (SVG/PDF engine),
+│   │                         #   repro (reproducibility), logger, …
 │   ├── blocks/               #   block system (Flow mode):
 │   │                         #     types · registry · compiler · executor ·
 │   │                         #     ops · catalog · sample · l10n · render
@@ -506,7 +535,10 @@ consistent on the same data semantics.
 **Three-mode conversion** — the shared IR is the single hub for all three
 editing modes: `src/editor/flow/convert.ts` round-trips IR ↔ Flow DAG
 (`irToFlow` / `flowToIR`), and `src/editor/block/convert.ts` round-trips
-Blockly JSON ↔ IR (`blockJSONToIR` / `irToBlockJSON`). Edit a pipeline in
+Blockly JSON ↔ IR (`blockJSONToIR` / `irToBlockJSON`). `src/editor/code/
+parse.ts` additionally parses `studio.*` calls in a Code-mode buffer back
+into the IR (`parseCodeToIR`), preserving unparsed lines as raw-code nodes.
+Edit a pipeline in
 Flow mode, switch to Blocks and see the same logic as Scratch blocks, then
 jump to Code for the generated Python — all driven by one IR. A dedicated
 `sync-threeway` unit test pins the round-trip in both directions.
@@ -520,7 +552,7 @@ architecture; R via webR is the remaining runtime.
 
 ### Built-in plugins
 
-**Core / scientific plugins** (auto-loaded at startup, 23 total):
+**Core / scientific plugins** (auto-loaded at startup, 30 total):
 
 | Plugin               | Data                        | Capability                |
 | -------------------- | --------------------------- | ------------------------- |
@@ -551,6 +583,9 @@ architecture; R via webR is the remaining runtime.
 | Wave Equation        | `.json` (u / drive grids)   | 2-D finite-difference wave equation (pulse / twin-source interference / double-slit scenarios); WGSL leapfrog kernel |
 | Double Pendulum      | `.json` (initial conditions) | RK4 integration with a chaos ghost twin offset by 0.001 rad — sensitive dependence made visible |
 | GeoJSON Map          | `.geojson`, `.json`         | offline vector map with choropleth shading; Albers (China) / Web Mercator / equirectangular projections |
+| Electromagnetism     | `.json` (charges / fields)  | draggable charges under Coulomb + Lorentz forces in a uniform B field; cyclotron spirals |
+| Optics Lab           | `.json` (optical layout)    | geometric ray tracing with thin lenses, a Snell + dispersion prism, and a draggable light screen |
+| Structural Mechanics | `.json` (truss members)     | pin-jointed truss with axial-force coloring, utilization readouts and overload collapse |
 
 Simulation plugins are strictly data-driven: they start empty and never
 fabricate a default scene — the flow obstacle, the wave scenario, and the
@@ -752,7 +787,10 @@ npm test          # or npm run test:unit
 npm run verify    # typecheck + unit tests
 ```
 
-285 tests across 31 suites: file-format detection, cspkg parsing/validation,
+417 tests across 46 test files: file-format detection, scientific binary
+I/O (NetCDF/HDF5/FITS/Parquet/Zarr helpers), the statistics kernel
+(descriptive, special functions, tests, effect sizes, corrections, power),
+cspkg parsing/validation,
 sandbox RPC (including an end-to-end round trip through a fake Worker),
 i18n, app store, WASM retry policy, GPU compute (WGSL templates — particles,
 N-Body, histogram, heatmap, point-cloud — buffer packing, CPU integrators,
@@ -761,7 +799,10 @@ service gating), built-in plugin logic, the data plugins' parsing helpers
 — `DataTable` ops, registry, compiler (validation/topology/type-check),
 executor (incremental cache + invalidation), geometry, catalog executors,
 the `viz.*` → plugin render bridge, codegen (JS/Python), three-mode IR sync (block ↔ flow ↔ code), the Pyodide worker
-protocol, and the pipeline samples that load via `import.meta.glob`.
+protocol, the structural-mechanics simulator, plugin runtime lifecycle and
+recent bugfix regressions, the publication-grade plot engine, the
+reproducibility kernel, and the pipeline samples that load via
+`import.meta.glob`.
 
 E2E suites (Playwright-core, headless Edge) against a production preview:
 
@@ -807,11 +848,11 @@ See [`docs/guide/roadmap.md`](docs/guide/roadmap.md) for the current status
 table. Highlights:
 
 - [x] Workbench layout, project management, file routing
-- [x] 37 built-in plugins (27 core + 10 fun/utility), cspkg loading, Worker sandbox
+- [x] 40 built-in plugins (30 core + 10 fun/utility), cspkg loading, Worker sandbox
 - [x] Plugin marketplace catalog (curated tags / popularity / category filters, on-demand loading)
 - [x] WebGPU device management + real compute-kernel pipeline
 - [x] i18n, theming, perf monitoring, share links
-- [x] Flow mode — visual dataflow pipeline (compiler + incremental executor + 23 built-in blocks + canvas UI + sample pipelines in `examples/projects/`)
+- [x] Flow mode — visual dataflow pipeline (compiler + incremental executor + 37 built-in blocks + canvas UI + sample pipelines in `examples/projects/`)
 - [x] Vitest unit tests + Playwright E2E suites
 - [x] Plugin compute surface (`api.gpu`), WGSL templates, Particles accelerated
 - [x] GPU acceleration across all example plugins (histogram/heatmap/point cloud)
@@ -819,7 +860,10 @@ table. Highlights:
 - [x] GitHub Actions CI (unit + E2E + Pages deploy)
 - [x] Block mode (Scratch-like, Google Blockly) — see [Block Mode](docs/guide/block-mode.md). 30+ built-in blocks, shared IR with the interpreter, lazy-loaded Blockly 13, and 5 sample programs; lives behind the `Blocks` top-bar slot.
 - [x] Code mode (Python via Pyodide) — Monaco editor, CPython worker runtime with a real importable `studio` module, REPL + variables, worker interrupt, and 9 sample programs under `examples/code/`; same IR shared with block mode.
-- [x] Three-mode conversion — Block ↔ Flow ↔ Code round-trip through the shared IR (`src/editor/flow/convert.ts` + `src/editor/block/convert.ts`), pinned by a `sync-threeway` unit test
+- [x] Three-mode conversion — Block ↔ Flow ↔ Code round-trip through the shared IR (`src/editor/flow/convert.ts` + `src/editor/block/convert.ts`), pinned by a `sync-threeway` unit test; Code-mode buffers parse back into the IR via `src/editor/code/parse.ts`
+- [x] Statistics subsystem — hypothesis tests, effect sizes, multiple-comparison corrections, power analysis (`src/core/stats/`), surfaced as 11 Flow-mode `stats.*` blocks
+- [x] Scientific binary I/O — HDF5 / NetCDF / FITS / Zarr / Parquet import via a single dispatcher (`src/core/io/`)
+- [x] Publication-grade plot engine with SVG/PDF export and a reproducibility kernel (`src/core/plot/`, `src/core/repro/`)
 - [ ] Code mode: R runtime (webR)
 
 ---
