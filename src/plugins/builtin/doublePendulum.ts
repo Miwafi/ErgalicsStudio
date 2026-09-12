@@ -304,6 +304,10 @@ export class DoublePendulumPlugin implements Plugin {
       );
       return;
     }
+    // New initial conditions invalidate a *running* simulation: halt it first
+    // so the freshly replayed pendula are not immediately integrated by the
+    // still-running frame loop. The user restarts explicitly with Start.
+    if (this.state.running) this.stop();
     this.initialIC = ic;
     this.state.hasData = true;
     this.replayLoaded();

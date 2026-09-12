@@ -10,6 +10,7 @@ import {
   setPluginCacheCap,
 } from '@/core/pluginCache';
 import { downloadBlob } from '@/core/download';
+import { on, emit } from '@/core/events';
 import type { ParamDefinition, Plugin, PluginApi, PluginManifest } from '@/types/plugin';
 
 // The project store needs IndexedDB; the plugin store only reads/writes
@@ -177,6 +178,23 @@ describe('downloadBlob', () => {
   });
 });
 
+// ---- param definition refresh ---------------------------------------------
+
+describe('refreshParamDefs', () => {
+  it('emits plugin:<id>:defs so an import can publish new options', async () => {
+    const { refreshParamDefs } = await import('@/stores/pluginStore');
+    const seen: string[] = [];
+    const sub = on('plugin:example.geo:defs', () => seen.push('defs'));
+    refreshParamDefs('example.geo');
+    sub.unsubscribe();
+    // An import (e.g. a GeoJSON file adding choropleth properties) changes
+    // the parameter set itself; the panel only re-reads getParams() on this
+    // event, so without it new options stayed invisible until some unrelated
+    // control happened to be edited.
+    expect(seen).toEqual(['defs']);
+  });
+});
+
 // ---- plugin store lifecycle ----------------------------------------------
 
 describe('pluginStore lifecycle', () => {
@@ -311,5 +329,45 @@ describe('plugin api surface', () => {
     // `log` must reach the host buffer under the plugin's own scope.
     api?.log('warn', 'careful');
     expect(logger.entries().some((e) => e.scope === 'plugin:example.api')).toBe(true);
+  });
+});
+
+// ---- parameter round-trip ordering ---------------------------------------
+
+describe('parameter round-trip ordering', () => {
+  it('re-reads the definitions only after updateParams has been applied', async () => {
+    let running = false;
+    const plugin = makePlugin('example.toggle', { events: [] }, {
+      getParams: (): ParamDefinition[] => [
+        { key: 'start', label: 'Run', type: 'toggle', value: running },
+      ],
+      // Async on purpose — a sandboxed plugin answers updateParams over RPC.
+      updateParams: async (params: Record<string, unknown>) => {
+        await Promise.resolve();
+        if (typeof params.start === 'boolean') running = params.start;
+      },
+    });
+    await usePluginStore.getState().load(plugin);
+    await usePluginStore.getState().activate('example.toggle');
+
+    // Whatever `getParams()` reports the moment `defs` fires is exactly what
+    // the param panel paints.
+    const seen: { value: unknown } = { value: undefined };
+    const sub = on('plugin:example.toggle:defs', () => {
+      const defs = plugin.getParams() as ParamDefinition[];
+      const def = defs.find((d) => d.key === 'start');
+      seen.value = def && 'value' in def ? def.value : undefined;
+    });
+
+    emit('plugin:example.toggle:params', { start: true });
+    await vi.waitFor(() => expect(seen.value).toBe(true));
+    sub.unsubscribe();
+
+    // The old order emitted `defs` synchronously, before the queued
+    // updateParams ran, so the panel read the pre-click value: the label
+    // lagged one click behind the action and every Start/Stop toggle
+    // appeared to need two clicks.
+    expect(seen.value).toBe(true);
+    expect(running).toBe(true);
   });
 });

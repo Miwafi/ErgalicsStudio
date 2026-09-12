@@ -288,6 +288,10 @@ export class WavePlugin implements Plugin {
       );
       return;
     }
+    // A new scenario invalidates a *running* simulation: halt it first so the
+    // freshly loaded field is not immediately advanced by the still-running
+    // frame loop. The user restarts explicitly with Run.
+    if (this.state.running) this.stop();
     this.initialU = data.u ? resampleGrid(data.u, W, H) : new Float32Array(W * H);
     this.initialDrive = data.drive ? resampleGrid(data.drive, W, H) : new Float32Array(W * H);
     this.state.hasData = true;

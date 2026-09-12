@@ -60,7 +60,18 @@ export const nbodyManifest: PluginManifest = {
 /** Hard cap on the CPU path so the one-shot Compute button cannot freeze the
  *  main thread. The GPU path is not capped — it dispatches the full N. */
 const CPU_NBODY_CAP = 3000;
+/**
+ * Bodies the *interactive* loop can integrate every frame.
+ *
+ * Higher than the one-shot cap because the all-pairs sweep now evaluates
+ * each pair once (Newton's third law) instead of twice, and because the run
+ * loop is the only place where a partial sweep is visible: integrating a
+ * prefix used to leave every body past the cap frozen in place on screen.
+ */
+const INTERACTIVE_NBODY_CAP = 4096;
 const MAX_BODIES = 8192;
+/** Slider granularity for the Bodies count (also its lower bound). */
+const NBODY_COUNT_STEP = 64;
 
 interface State {
   count: number;
@@ -132,9 +143,27 @@ export class NBodyPlugin implements Plugin {
     this.draw();
   }
 
+  /**
+   * Upper bound of the Bodies slider.
+   *
+   * Resampling draws from the loaded initial conditions, so a fixed
+   * `MAX_BODIES` ceiling let the slider run past the end of the data: the
+   * request was silently clamped and the control appeared to do nothing.
+   * Reported bounds now match the dataset actually available.
+   */
+  private get countMax(): number {
+    if (!this.state.hasData) return MAX_BODIES;
+    const step = NBODY_COUNT_STEP;
+    const n = this.raw.length;
+    return Math.max(step, Math.min(MAX_BODIES, Math.ceil(n / step) * step));
+  }
+
   updateParams(params: Record<string, unknown>) {
     if (typeof params.count === 'number' && params.count !== this.state.count) {
-      this.state.count = Math.max(64, Math.min(MAX_BODIES, Math.floor(params.count)));
+      this.state.count = Math.max(
+        NBODY_COUNT_STEP,
+        Math.min(this.countMax, Math.floor(params.count)),
+      );
       // Only resample a real dataset; never fabricate one.
       if (this.state.hasData) this.resampleLoaded();
     }
@@ -151,7 +180,15 @@ export class NBodyPlugin implements Plugin {
 
   getParams(): ParamDefinition[] {
     return [
-      { key: 'count', label: 'Bodies', type: 'range', min: 64, max: MAX_BODIES, step: 64, value: this.state.count },
+      {
+        key: 'count',
+        label: 'Bodies',
+        type: 'range',
+        min: NBODY_COUNT_STEP,
+        max: this.countMax,
+        step: NBODY_COUNT_STEP,
+        value: this.state.count,
+      },
       { key: 'G', label: 'Gravity G', type: 'range', min: 0.005, max: 0.5, step: 0.005, value: this.state.G },
       { key: 'softening', label: 'Softening', type: 'range', min: 0.005, max: 0.3, step: 0.005, value: this.state.softening },
       { key: 'dt', label: 'Timestep', type: 'range', min: 0.0005, max: 0.02, step: 0.0005, value: this.state.dt },
@@ -186,14 +223,28 @@ export class NBodyPlugin implements Plugin {
       this.api.notify('warning', this.api.locale === 'zh-CN' ? '无法解析数据文件' : 'Could not parse data file');
       return;
     }
+    // A new dataset invalidates a *running* simulation: halt it first so the
+    // freshly loaded bodies are not immediately integrated by the still-running
+    // frame loop. The user restarts explicitly with Start.
+    if (this.state.running) this.stop();
     this.bodies = bodies;
     // Keep a pristine copy of the loaded dataset for non-destructive
     // resampling (body objects are mutated in place by the integrators).
     this.raw = bodies.map((b) => ({ ...b }));
-    this.state.count = Math.min(MAX_BODIES, Math.max(64, this.bodies.length));
     this.state.hasData = true;
-    this.api.reportDataScale(this.bodies.length);
-    this.rebuildMesh();
+    // Never keep more bodies on screen than the slider can report: a loader
+    // handing us more than MAX_BODIES would otherwise leave `state.count` and
+    // the drawn set disagreeing (the same "slider cannot be filled" defect the
+    // protein network had). Resampling from the pristine copy keeps every
+    // loaded body recoverable.
+    if (this.bodies.length > MAX_BODIES) {
+      this.state.count = MAX_BODIES;
+      this.resampleLoaded();
+    } else {
+      this.state.count = Math.max(NBODY_COUNT_STEP, this.bodies.length);
+      this.api.reportDataScale(this.bodies.length);
+      this.rebuildMesh();
+    }
     this.fitCamera();
     this.draw();
   }
@@ -439,6 +490,20 @@ export class NBodyPlugin implements Plugin {
       );
       return;
     }
+    // Cap the set *once*, before the loop starts, rather than integrating a
+    // prefix every frame: bodies past the cap would never move. The resample
+    // is non-destructive — the pristine copy keeps every loaded body, so
+    // lowering the count and raising it again restores the full dataset.
+    if (this.bodies.length > INTERACTIVE_NBODY_CAP) {
+      this.state.count = INTERACTIVE_NBODY_CAP;
+      this.resampleLoaded();
+      this.api.notify(
+        'info',
+        this.api.locale === 'zh-CN'
+          ? `交互式模拟运行前 ${INTERACTIVE_NBODY_CAP} / ${this.raw.length} 个天体（算力上限）`
+          : `Interactive run uses the first ${INTERACTIVE_NBODY_CAP} / ${this.raw.length} bodies (compute limit)`,
+      );
+    }
     this.state.running = true;
     this.api.setStatus('computing');
     this.rafId = requestAnimationFrame(this.tick);
@@ -452,16 +517,11 @@ export class NBodyPlugin implements Plugin {
 
   private tick = () => {
     if (!this.state.running) return;
-    // One integration step per frame (CPU). The interactive loop must respect
-    // the same CPU cap as the one-shot Compute button — at MAX_BODIES the full
-    // all-pairs pass is ~67M iterations per frame and freezes the main thread.
-    const n = this.bodies.length;
-    const cap = Math.min(n, CPU_NBODY_CAP);
-    const work = cap < n ? this.bodies.slice(0, cap) : this.bodies;
-    advanceNBodyCPU(work, this.state.dt, this.state.G, this.state.softening);
-    if (cap < n) {
-      for (let i = 0; i < cap; i += 1) this.bodies[i] = work[i] as NBodyBody;
-    }
+    // One integration step per frame, over the *whole* drawn set. Slicing a
+    // prefix here (the old CPU cap) left every remaining body pinned at its
+    // initial position — a ring of motionless points that looked like a
+    // rendering bug. The set is capped once, when the run starts, instead.
+    advanceNBodyCPU(this.bodies, this.state.dt, this.state.G, this.state.softening);
     this.updateGeometry();
     this.draw();
     this.rafId = requestAnimationFrame(this.tick);

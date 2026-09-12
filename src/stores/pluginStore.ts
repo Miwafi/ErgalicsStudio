@@ -394,8 +394,14 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
       const sub = on(`plugin:${id}:params`, (params: Record<string, unknown>) => {
         void Promise.resolve()
           .then(() => plugin.updateParams?.(params))
-          .catch((err: unknown) => logger.warn('plugin', 'updateParams failed', { id }, err));
-        emit(`plugin:${id}:defs`, undefined);
+          .catch((err: unknown) => logger.warn('plugin', 'updateParams failed', { id }, err))
+          // Re-read the definitions only *after* the plugin has applied the
+          // change. Emitting before (the old order) made the panel re-read
+          // `getParams()` while `updateParams` was still queued, so a toggle
+          // reported its pre-click value — the label lagged one click behind
+          // the action and every Start/Stop appeared to need two clicks.
+          // `finally` keeps the panel in sync even when updateParams rejects.
+          .finally(() => emit(`plugin:${id}:defs`, undefined));
       });
       const existing = paramSubscriptions.get(id) ?? [];
       paramSubscriptions.set(id, [...existing, sub]);
@@ -668,6 +674,21 @@ export async function runTracked<T>(
 
 export function isPluginActive(id: string): boolean {
   return usePluginStore.getState().activeId === id;
+}
+
+/**
+ * Ask the host UI to re-read a plugin's parameter definitions.
+ *
+ * `loadData()` routinely discovers options that did not exist before the
+ * import — a GeoJSON file contributes the numeric property list behind the
+ * choropleth selector, a network file changes the achievable node count.
+ * The param panel only refreshes on `plugin:<id>:defs`, which used to fire
+ * solely when the *user* edited a control, so freshly-imported options
+ * stayed invisible until an unrelated edit happened to poke it (the classic
+ * "the property only shows up after I switch the projection" report).
+ */
+export function refreshParamDefs(pluginId: string): void {
+  emit(`plugin:${pluginId}:defs`, undefined);
 }
 
 export function pluginName(id: string): string {

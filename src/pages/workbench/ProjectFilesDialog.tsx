@@ -11,7 +11,7 @@ import { useRef } from 'react';
 import { useT, useLocale } from '@/i18n';
 import { Modal } from '@/components/Modal';
 import { useAppStore } from '@/stores/appStore';
-import { usePluginStore } from '@/stores/pluginStore';
+import { usePluginStore, refreshParamDefs } from '@/stores/pluginStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { logger } from '@/core/logger';
 
@@ -89,6 +89,8 @@ export function ProjectFilesDialog({ open, onClose }: ProjectFilesDialogProps) {
     try {
       const blob = new File([file.content], file.name, { type: file.mimeType });
       await plugin.loadData(blob);
+      // The import may have changed the plugin's own parameter set.
+      refreshParamDefs(activeEntry?.id ?? '');
       notify('success', t('workbench.files.loaded', { plugin: activeName || file.name }));
     } catch (err) {
       notify('error', t('workbench.files.load_failed', { reason: String(err) }));
