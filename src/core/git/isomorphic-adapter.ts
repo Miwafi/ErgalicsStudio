@@ -32,6 +32,7 @@ import {
   GIT_ERROR_CODES,
 } from './types';
 import { STANDARD_HOOKS, STANDARD_TEMPLATE_FILES } from './templates';
+import { assertValidGitRef } from './refname';
 
 // Lazy singleton: constructing LightningFS requires `indexedDB`, which does
 // not exist in Node (unit tests) — so instantiate on first use, not at import.
@@ -229,22 +230,30 @@ export class IsomorphicGitAdapter implements GitAdapter {
   }
 
   async clone(url: string, targetPath: string, opts?: CloneOptions): Promise<void> {
+    if (opts?.branch) assertValidGitRef(opts.branch, 'branch');
     const controller = new AbortController();
     this.controllers.set(`${targetPath}:clone`, controller);
     const fs = this.getFS();
     await mkdirp(fs, targetPath);
 
-    await Git.clone({
-      fs,
-      http,
-      dir: targetPath,
-      url,
-      corsProxy: proxyFor(opts),
-      ref: opts?.branch || 'main',
-      singleBranch: opts?.singleBranch ?? true,
-      depth: opts?.depth,
-      onProgress: toProgressHandler(opts?.onProgress),
-    });
+    try {
+      await Git.clone({
+        fs,
+        http,
+        dir: targetPath,
+        url,
+        corsProxy: proxyFor(opts),
+        ref: opts?.branch || 'main',
+        singleBranch: opts?.singleBranch ?? true,
+        depth: opts?.depth,
+        onProgress: toProgressHandler(opts?.onProgress),
+        // NOTE: isomorphic-git 1.43 clone() accepts no AbortSignal (push does),
+        // so abort(repoPath, 'clone') cannot cancel a running clone — the
+        // controller is registered for API symmetry only.
+      });
+    } finally {
+      this.controllers.delete(`${targetPath}:clone`);
+    }
   }
 
   async isRepo(repoPath: string): Promise<boolean> {
@@ -409,16 +418,22 @@ export class IsomorphicGitAdapter implements GitAdapter {
         newLine++;
         continue;
       }
-      sinceChange = 0;
-      if (!hunk || sinceChange === 0) {
+      // A change separated from the previous one by more than CONTEXT context
+      // lines starts a new hunk. The test must run BEFORE the reset below —
+      // resetting first made `sinceChange === 0` always true, which forced a
+      // new hunk for every single changed line.
+      if (!hunk || sinceChange > CONTEXT) {
         hunk = { oldStart: oldLine, oldLines: 0, newStart: newLine, newLines: 0, lines: [] };
         hunks.push(hunk);
       }
+      sinceChange = 0;
       if (op.type === 'add') {
         hunk.lines.push({ type: 'add', content: op.content, newLineNumber: newLine++ });
+        hunk.newLines += 1;
         additions++;
       } else {
         hunk.lines.push({ type: 'del', content: op.content, oldLineNumber: oldLine++ });
+        hunk.oldLines += 1;
         deletions++;
       }
     }
@@ -484,6 +499,7 @@ export class IsomorphicGitAdapter implements GitAdapter {
    * are allowed, matching git's tolerance when they are not overwritten.
    */
   async checkout(repoPath: string, ref: string, create = false): Promise<void> {
+    assertValidGitRef(ref, 'branch/ref');
     const fs = this.getFS();
     if (!create) {
       // Unborn HEAD resolves to undefined — nothing to lose yet.
@@ -501,6 +517,26 @@ export class IsomorphicGitAdapter implements GitAdapter {
           err.gitCommand = 'checkout';
           throw err;
         }
+        // Untracked files survive a checkout in real git — unless the target
+        // branch contains a file at the same path, in which case git refuses
+        // instead of silently destroying them. Mirror that guard here: the
+        // force checkout below would otherwise overwrite them.
+        if (st.untracked.length > 0) {
+          const targetFiles = new Set(
+            await Git.listFiles({ fs, dir: repoPath, ref }).catch(() => [] as string[]),
+          );
+          const collisions = st.untracked.filter((f) => targetFiles.has(f));
+          if (collisions.length > 0) {
+            const err = new Error(
+              `Cannot checkout '${ref}': untracked files would be overwritten. ` +
+                'Add or commit them first:\n' +
+                collisions.map((f) => `  ${f}`).join('\n'),
+            ) as GitError;
+            err.code = GIT_ERROR_CODES.DIRTY;
+            err.gitCommand = 'checkout';
+            throw err;
+          }
+        }
       }
     }
     if (create) {
@@ -510,11 +546,14 @@ export class IsomorphicGitAdapter implements GitAdapter {
   }
 
   async branch(repoPath: string, name: string, startPoint?: string): Promise<void> {
+    assertValidGitRef(name, 'branch');
+    if (startPoint !== undefined) assertValidGitRef(startPoint, 'start point');
     const fs = this.getFS();
     await Git.branch({ fs, dir: repoPath, ref: name, object: startPoint });
   }
 
   async deleteBranch(repoPath: string, name: string): Promise<void> {
+    assertValidGitRef(name, 'branch');
     const fs = this.getFS();
     await Git.deleteBranch({ fs, dir: repoPath, ref: name });
   }
@@ -525,6 +564,7 @@ export class IsomorphicGitAdapter implements GitAdapter {
    * surfaces as a generic conflict result.
    */
   async merge(repoPath: string, branch: string): Promise<MergeResult> {
+    assertValidGitRef(branch, 'branch');
     const fs = this.getFS();
     try {
       const result = await Git.merge({ fs, dir: repoPath, theirs: branch });
@@ -535,23 +575,31 @@ export class IsomorphicGitAdapter implements GitAdapter {
   }
 
   async push(repoPath: string, opts: PushOptions): Promise<void> {
+    assertValidGitRef(opts.branch, 'branch');
+    assertValidGitRef(opts.remote, 'remote');
     const controller = new AbortController();
     this.controllers.set(`${repoPath}:push`, controller);
     const fs = this.getFS();
-    await Git.push({
-      fs,
-      http,
-      dir: repoPath,
-      remote: opts.remote,
-      ref: opts.branch,
-      force: opts.force,
-      corsProxy: proxyFor(opts),
-      onProgress: toProgressHandler(opts.onProgress),
-      signal: controller.signal,
-    });
+    try {
+      await Git.push({
+        fs,
+        http,
+        dir: repoPath,
+        remote: opts.remote,
+        ref: opts.branch,
+        force: opts.force,
+        corsProxy: proxyFor(opts),
+        onProgress: toProgressHandler(opts.onProgress),
+        signal: controller.signal,
+      });
+    } finally {
+      this.controllers.delete(`${repoPath}:push`);
+    }
   }
 
   async pull(repoPath: string, opts: PullOptions): Promise<void> {
+    assertValidGitRef(opts.branch, 'branch');
+    assertValidGitRef(opts.remote, 'remote');
     const fs = this.getFS();
     // Note: isomorphic-git v1 has no `--rebase`; pulls are merge-based.
     await Git.pull({
@@ -579,6 +627,7 @@ export class IsomorphicGitAdapter implements GitAdapter {
   }
 
   async addRemote(repoPath: string, name: string, url: string): Promise<void> {
+    assertValidGitRef(name, 'remote');
     const fs = this.getFS();
     await Git.addRemote({ fs, dir: repoPath, remote: name, url });
   }

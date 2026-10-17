@@ -13,6 +13,7 @@
 // ==========================================================================
 
 import { mdToHtml } from '@/core/notebook/notebook';
+import { sanitizeSvg } from '@/core/sanitize/sanitizeSvg';
 import { renderSVG } from '@/core/plot';
 import type { Project } from '@/types/project';
 import type { RunRecord } from '@/core/experiment/record';
@@ -126,14 +127,6 @@ export function escapeHtml(s: unknown): string {
 export function safeJsonScript(data: unknown, elementId: string): string {
   const json = JSON.stringify(data).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
   return `<script type="application/json" id="${escapeHtml(elementId)}">${json}</script>`;
-}
-
-/** Strip executable content from an SVG produced by an external renderer. */
-function sanitizeSvg(svg: string): string {
-  return svg
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/\son[a-z]+\s*=\s*"[^"]*"/gi, '')
-    .replace(/\son[a-z]+\s*=\s*'[^']*'/gi, '');
 }
 
 // --------------------------------------------------------------------------
@@ -416,8 +409,8 @@ function renderFilter(
       min = 0;
       max = 0;
     }
-    control = `<label>${labels.min} <input type="number" data-bound="min" step="any" value="${escapeHtml(min)}"></label>`
-      + `<label>${labels.max} <input type="number" data-bound="max" step="any" value="${escapeHtml(max)}"></label>`;
+    control = `<label>${labels.min} <input type="text" inputmode="decimal" data-bound="min" value="${escapeHtml(min)}"></label>`
+      + `<label>${labels.max} <input type="text" inputmode="decimal" data-bound="max" value="${escapeHtml(max)}"></label>`;
   } else {
     const values = new Set<string>();
     for (const t of targetTables) {
@@ -542,6 +535,9 @@ export async function buildReport(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Defense in depth (issue #25): the document is fully self-contained —
+     inline styles/scripts only, no external loads of any kind. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:">
 <title>${escapeHtml(spec.title)}</title>
 <style>${reportCss(theme)}</style>
 </head>
