@@ -20,7 +20,10 @@ function isParamVisible(def: ParamDefinition, all: ParamDefinition[]): boolean {
   const ref = all.find((d) => d.key === cond.key);
   // Referenced control missing → hide (fail safe rather than render blindly).
   if (!ref) return false;
-  const matches = (v: unknown) => String(v) === String(ref.value);
+  // Buttons carry no `value`; treat them as undefined so a `showWhen` that
+  // (mis)points at one fails safe to hidden rather than crashing the type check.
+  const refValue = 'value' in ref ? ref.value : undefined;
+  const matches = (v: unknown) => String(v) === String(refValue);
   if (cond.equals !== undefined) return matches(cond.equals);
   if (cond.notEquals !== undefined) return !matches(cond.notEquals);
   if (cond.in) return cond.in.some(matches);
