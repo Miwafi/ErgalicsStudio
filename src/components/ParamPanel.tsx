@@ -13,16 +13,37 @@ interface ParamPanelProps {
   onChange: (key: string, value: unknown) => void;
 }
 
+/** Whether a param should be shown, honouring its `showWhen` gate. */
+function isParamVisible(def: ParamDefinition, all: ParamDefinition[]): boolean {
+  const cond = def.showWhen;
+  if (!cond) return true;
+  const ref = all.find((d) => d.key === cond.key);
+  // Referenced control missing → hide (fail safe rather than render blindly).
+  if (!ref) return false;
+  const matches = (v: unknown) => String(v) === String(ref.value);
+  if (cond.equals !== undefined) return matches(cond.equals);
+  if (cond.notEquals !== undefined) return !matches(cond.notEquals);
+  if (cond.in) return cond.in.some(matches);
+  if (cond.notIn) return !cond.notIn.some(matches);
+  return true;
+}
+
 export function ParamPanel({ params, api, onChange }: ParamPanelProps) {
   const label = (def: ParamDefinition) =>
     def.labelI18n?.[api.locale] ?? def.label;
+
+  // Honour each param's `showWhen` gate up front: a control whose condition is
+  // unmet for the current param values is dropped before grouping, so mode-only
+  // sliders (e.g. a 3-D "resonant mode" selector) simply disappear when the
+  // plugin is in a mode where they have no effect.
+  const visible = params.filter((def) => isParamVisible(def, params));
 
   // Bucket params: grouped ones (sharing a `group` id) flow side-by-side inside
   // a wrap container. Rendering keeps the param array's declared order, so each
   // group is laid out at the position of its first member (e.g. the reactant
   // slots right under the mode selector, before the action buttons).
   const groups = new Map<string, ParamDefinition[]>();
-  for (const def of params) {
+  for (const def of visible) {
     if (!def.group) continue;
     const arr = groups.get(def.group) ?? [];
     arr.push(def);
@@ -33,7 +54,7 @@ export function ParamPanel({ params, api, onChange }: ParamPanelProps) {
     | { kind: 'single'; def: ParamDefinition }
     | { kind: 'group'; group: string; defs: ParamDefinition[] }
   > = [];
-  for (const def of params) {
+  for (const def of visible) {
     if (def.group) {
       if (renderedGroups.has(def.group)) continue;
       renderedGroups.add(def.group);

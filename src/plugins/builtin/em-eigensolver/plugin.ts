@@ -28,7 +28,7 @@ import type { PlotSpec } from '@/core/plot';
 import { actionButton, actionFired, notify } from '@/core/plugin-tools/enhance';
 import { EmSolverClient } from './em-client';
 import { buildDiagReportHtml } from './diag-report';
-import { drawPanels } from './render';
+import { drawPanels, drawSpectrumStrip } from './render';
 import { buildFieldAnnotations, buildFieldMesh, disposeObjectTree, fitFieldCamera } from './render3d';
 import {
   EM_SAMPLES,
@@ -424,6 +424,9 @@ export class EmEigensolverPlugin implements Plugin {
         type: 'text',
         value: this.state.sigmaText,
         placeholder: '0',
+        // Shift-invert only drives Jacobi-Davidson (and auto→JD when set);
+        // Lanczos / LOBPCG are extremal solvers that ignore σ, so hide it there.
+        showWhen: { key: 'method', notIn: ['lanczos', 'lobpcg'] },
       },
       numSelect('tol', 'Tolerance', { 'zh-CN': '收敛容差', 'en-US': 'Tolerance' }, TOL_CHOICES, this.state.tol, (v) => v.toExponential(0)),
       numSelect('basisDim', 'Basis Width', { 'zh-CN': '基宽（内存档位）', 'en-US': 'Basis width (memory knob)' }, BASIS_CHOICES, this.state.basisDim),
@@ -440,17 +443,20 @@ export class EmEigensolverPlugin implements Plugin {
         value: this.state.view,
       },
     ];
-    // The resonant-mode selector drives the 3D mode-field playback only.
-    if (this.state.view === 'mode3d') {
-      params.push({
-        key: 'modeIndex',
-        label: 'Resonant Mode (3D view)',
-        labelI18n: { 'zh-CN': '谐振模式（3D 视图）', 'en-US': 'Resonant mode (3D view)' },
-        type: 'select',
-        options: this.modeOptions(zh),
-        value: String(this.state.modeIndex),
-      });
-    }
+    // The resonant-mode selector drives the 3-D mode-field playback only. It is
+    // now declared unconditionally with a `showWhen` gate (view === 'mode3d')
+    // instead of being spliced in/out of the list by hand — the panel hides it
+    // in the 2-D report view, so only the controls that affect the active mode
+    // are ever shown.
+    params.push({
+      key: 'modeIndex',
+      label: 'Resonant Mode (3D view)',
+      labelI18n: { 'zh-CN': '谐振模式（3D 视图）', 'en-US': 'Resonant mode (3D view)' },
+      type: 'select',
+      options: this.modeOptions(zh),
+      value: String(this.state.modeIndex),
+      showWhen: { key: 'view', equals: 'mode3d' },
+    });
     params.push(actionButton('run', this.busy ? 'Solving…' : 'Solve', this.busy ? '计算中…' : '运行求解', 'primary'));
     // Contextual actions: only when they can actually do something.
     if (this.busy) params.push(actionButton('abort', 'Abort', '终止求解'));
@@ -924,7 +930,7 @@ export class EmEigensolverPlugin implements Plugin {
     if (this.state.view === 'mode3d' && this.three && fields && fields.length > 0) {
       const field = fields[Math.min(this.state.modeIndex, fields.length) - 1]!;
       this.mode3dHint = '';
-      this.draw3d(field);
+      this.draw3dSplit(field);
       return;
     }
     // Explain why the 3D view fell back to the 2D panels (once per cause).
@@ -947,9 +953,10 @@ export class EmEigensolverPlugin implements Plugin {
           : '3D 容器未挂载——请点击下方「重置插件」，然后重新求解。',
       );
     }
-    // 2D report view (and fallback when no fields / no scene): hide the 3D
-    // overlay and free any stale field mesh so the host's stale frame can
-    // never cover the panels.
+    // 2D report view (and fallback when no fields / no scene): undo the split
+    // view's bottom-only scissor, hide the 3D overlay and free any stale field
+    // mesh so the host's stale frame can never cover the panels.
+    this.resetThreeViewport();
     this.three?.setVisible(false);
     this.clearFieldMesh();
     const canvas = this.ctx?.canvas2d;
@@ -970,28 +977,80 @@ export class EmEigensolverPlugin implements Plugin {
     }
   }
 
-  /** Paint one mode field as a displaced surface in the host scene. */
-  private draw3d(field: EmModeField) {
+  /**
+   * Combined 3D view: the eigenvalue spectrum sits in a top strip (drawn on the
+   * always-on-top 2D canvas, transparent below) and the mode-field surface fills
+   * the bottom region. The 3D render is confined to that bottom region via the
+   * renderer viewport/scissor, so it shares the spectrum's full width and the two
+   * line up instead of overlapping with mismatched margins.
+   */
+  private draw3dSplit(field: EmModeField) {
+    const three = this.three;
+    const canvas = this.ctx?.canvas2d;
+    if (canvas) canvas.style.display = 'block';
+    const w = Math.max(320, Math.floor((three?.renderer.domElement.clientWidth || canvas?.clientWidth || 640)));
+    const h = Math.max(240, Math.floor((three?.renderer.domElement.clientHeight || canvas?.clientHeight || 480)));
+    const topH = Math.round(h * 0.34);
+    const botH = h - topH;
+    if (three) {
+      if (this.fieldMeshFor !== field || this.fieldScene !== three) {
+        this.clearFieldMesh();
+        this.fieldMesh = buildFieldMesh(field);
+        this.fieldAnno = buildFieldAnnotations(field);
+        this.fieldMeshFor = field;
+        this.fieldScene = three;
+        three.scene.add(this.fieldMesh);
+        three.scene.add(this.fieldAnno);
+        fitFieldCamera(three.camera, three.controls, field.rows, field.cols);
+        this.api?.log(
+          'info',
+          `[em-eigensolver] 3D mode field: mode ${field.index + 1}, ` +
+            `λ=${field.eigenvalue.toExponential(4)}, grid ${field.rows}x${field.cols}` +
+            (field.approx ? ' (approximate layout)' : ''),
+        );
+      }
+      // Confine the 3D render to the bottom region (full width, matching the
+      // spectrum strip above). setVisible() re-syncs the size, so the viewport
+      // must be set *after* it. Clear the whole canvas once first so no stale
+      // frame lingers in the strip region (which stays behind the 2D canvas).
+      const r = three.renderer;
+      three.setVisible(true);
+      r.setScissorTest(false);
+      r.setViewport(0, 0, w, h);
+      r.clear();
+      r.setScissorTest(true);
+      r.setViewport(0, 0, w, botH);
+      r.setScissor(0, 0, w, botH);
+      three.camera.aspect = w / botH;
+      three.camera.updateProjectionMatrix();
+      three.render();
+    }
+    if (canvas) {
+      drawSpectrumStrip(canvas, {
+        result: this.result,
+        history: this.history,
+        logs: this.logs,
+        busy: this.busy,
+        hasFile: this.file !== null,
+        sigma: parseSigma(this.state.sigmaText),
+        zh: this.api?.locale === 'zh-CN',
+      }, topH);
+    }
+  }
+
+  /** Restore the shared 3D renderer to a full-canvas, un-clipped viewport. The
+   *  split 3D view sets a bottom-only scissor; it must be undone before hiding
+   *  this scene or before another plugin mounts here, or the clip persists. */
+  private resetThreeViewport() {
     const three = this.three;
     if (!three) return;
-    if (this.fieldMeshFor !== field || this.fieldScene !== three) {
-      this.clearFieldMesh();
-      this.fieldMesh = buildFieldMesh(field);
-      this.fieldAnno = buildFieldAnnotations(field);
-      this.fieldMeshFor = field;
-      this.fieldScene = three;
-      three.scene.add(this.fieldMesh);
-      three.scene.add(this.fieldAnno);
-      fitFieldCamera(three.camera, three.controls, field.rows, field.cols);
-      this.api?.log(
-        'info',
-        `[em-eigensolver] 3D mode field: mode ${field.index + 1}, ` +
-          `λ=${field.eigenvalue.toExponential(4)}, grid ${field.rows}x${field.cols}` +
-          (field.approx ? ' (approximate layout)' : ''),
-      );
-    }
-    three.setVisible(true);
-    three.render();
+    const cw = three.renderer.domElement.clientWidth || 640;
+    const ch = three.renderer.domElement.clientHeight || 480;
+    const r = three.renderer;
+    r.setScissorTest(false);
+    r.setViewport(0, 0, cw, ch);
+    three.camera.aspect = cw / ch;
+    three.camera.updateProjectionMatrix();
   }
 
   private clearFieldMesh() {
@@ -1012,6 +1071,7 @@ export class EmEigensolverPlugin implements Plugin {
 
   /** Release the 3D surface (plugin deactivate/destroy or view switch). */
   private teardown3d() {
+    this.resetThreeViewport();
     this.clearFieldMesh();
     this.three?.setVisible(false);
   }

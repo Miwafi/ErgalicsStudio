@@ -149,6 +149,36 @@ export interface BaseParam {
    * numeric input). Only honoured inside a group.
    */
   inline?: boolean;
+  /**
+   * Declarative visibility condition. When present, the host hides this control
+   * in the parameter panel unless the referenced sibling param's current value
+   * satisfies the condition. This lets a plugin expose mode-specific controls
+   * (e.g. a "resonant mode" selector that only makes sense in the 3-D view)
+   * without manually rebuilding the whole param list on every mode change.
+   *
+   * Declarative (not a function) on purpose: plugin param definitions cross the
+   * sandbox RPC boundary, where functions cannot be structured-cloned.
+   */
+  showWhen?: ParamShowWhen;
+}
+
+/**
+ * Visibility gate for a param. The host evaluates it against the *current*
+ * values of the other params (their `value` field) each time it renders the
+ * panel. Comparisons are performed as strings so `'mode3d'` matches a select
+ * whose value is the string `'mode3d'` and `1` matches a numeric `1`.
+ */
+export interface ParamShowWhen {
+  /** Key of the sibling param whose current value is tested. */
+  key: string;
+  /** Show only when that value equals this (string/number compare). */
+  equals?: string | number | boolean;
+  /** Show only when that value does NOT equal this. */
+  notEquals?: string | number | boolean;
+  /** Show only when that value equals one of these. */
+  in?: Array<string | number | boolean>;
+  /** Show only when that value equals NONE of these. */
+  notIn?: Array<string | number | boolean>;
 }
 
 export interface RangeParam extends BaseParam {

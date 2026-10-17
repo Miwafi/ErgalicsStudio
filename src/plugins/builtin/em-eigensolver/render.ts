@@ -132,6 +132,44 @@ export function drawPanels(canvas: HTMLCanvasElement, input: DrawInput): boolean
   return true;
 }
 
+/**
+ * Draw only the eigenvalue spectrum into the top strip of the 2D canvas, leaving
+ * the area below transparent so the 3D mode-field render (which fills that bottom
+ * region) shows through. Both share the full canvas width, so the spectrum and
+ * the 3D view stay aligned in the combined 3D view.
+ */
+export function drawSpectrumStrip(
+  canvas: HTMLCanvasElement,
+  input: DrawInput,
+  topH: number,
+): void {
+  canvas.width = canvas.clientWidth || 640;
+  canvas.height = canvas.clientHeight || 400;
+  const g = canvas.getContext('2d');
+  if (!g) return;
+  const { width: w } = canvas;
+  g.clearRect(0, 0, w, canvas.height); // transparent below → 3D shows through
+  const bg = getComputedStyle(canvas).backgroundColor || '#0a0e13';
+  g.fillStyle = bg;
+  g.fillRect(0, 0, w, topH);
+  // thin separator between the spectrum strip and the 3D render below
+  g.strokeStyle = 'rgba(148,163,184,0.35)';
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(0, topH - 0.5);
+  g.lineTo(w, topH - 0.5);
+  g.stroke();
+  const { result, sigma, zh } = input;
+  if (result) {
+    drawSpectrum(g, 0, 0, w, topH, result, sigma, zh);
+  } else {
+    g.fillStyle = TEXT;
+    g.font = font(zh);
+    g.textAlign = 'left';
+    g.fillText(zh ? '等待求解…' : 'Waiting for a solve…', 14, topH / 2 + 5);
+  }
+}
+
 /** Busy (no result yet): live progress line + kernel log tail. */
 function drawProgress(
   g: CanvasRenderingContext2D,

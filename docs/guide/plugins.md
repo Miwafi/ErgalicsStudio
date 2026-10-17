@@ -224,7 +224,7 @@ Built-in plugins share framework-level helpers through `src/core/` only:
 ## Built-in example plugins
 
 Fifty-six scientific/core plugins (plus a further ten `fun.*` toys
-declaring `autoload: false` — 66 built-ins in total) ship in
+declaring `autoload: false` — 108 built-ins in total) ship in
 `src/plugins/builtin/` and cover the full plugin contract surface — 2D
 canvas, host Three.js scene, `loadData`, `compute`, and the `api.gpu`
 accelerated path:
